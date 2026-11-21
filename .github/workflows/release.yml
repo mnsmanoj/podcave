@@ -1,0 +1,202 @@
+# Release — manual only. Actions → "Release" → Run workflow → pick the branch + enter a version.
+# Stages run one after another and each must pass:  1 Build → 2 Test → 3 Security → 4 Publish
+name: Release
+run-name: Release ${{ inputs.version }} from ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. v1.0.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  GOVULNCHECK_VERSION: v1.10.0
+
+jobs:
+  build:
+    name: 1 · Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version must look like v1.2.3 (or v1.2.3-rc.1), got '$VERSION'"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag $VERSION already exists; pick a new version"
+            exit 1
+          fi
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web UI
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-fund
+          npm run build
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false # never let a cache influence release binaries
+      - name: Cross-compile (Windows, Linux, macOS × amd64/arm64)
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p out
+          for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"; ext=""
+            [ "$os" = windows ] && ext=".exe"
+            echo "::group::$os/$arch"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION#v}" \
+              -o "out/podcave-${VERSION}-${os}-${arch}${ext}" .
+            echo "::endgroup::"
+          done
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: 2 · Test (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Placeholder UI for go:embed
+        run: mkdir -p web/dist && echo placeholder > web/dist/placeholder.txt
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./internal/...
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+          path: out
+      - name: Smoke test the released binary for this OS
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$RUNNER_OS" in
+            Windows) os=windows; ext=".exe" ;;
+            macOS)   os=darwin;  ext="" ;;
+            *)       os=linux;   ext="" ;;
+          esac
+          case "$RUNNER_ARCH" in
+            ARM64) arch=arm64 ;;
+            *)     arch=amd64 ;;
+          esac
+          bin="out/podcave-${VERSION}-${os}-${arch}${ext}"
+          chmod +x "$bin"
+          got="$("$bin" --version)"
+          echo "$got"
+          [ "$got" = "pod-cave ${VERSION#v}" ] || { echo "::error::unexpected version output"; exit 1; }
+
+  security:
+    name: 3 · Security (source)
+    needs: test
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/security-scan.yml
+
+  security-binaries:
+    name: 3 · Security (built binaries)
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+          path: out
+      - name: govulncheck every release binary
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          for f in out/podcave-*; do
+            echo "::group::$f"
+            "$(go env GOPATH)/bin/govulncheck" -mode=binary "$f"
+            echo "::endgroup::"
+          done
+
+  publish:
+    name: 4 · Publish
+    needs: [security, security-binaries]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write # create the tag + GitHub Release
+      id-token: write # sign the build attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: binaries
+          path: out
+      - name: SHA256 checksums
+        working-directory: out
+        run: |
+          sha256sum podcave-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Build provenance attestation (proves the binaries came from this commit)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/podcave-*
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          flags=(--target "$TARGET_SHA" --title "Pod Cave $VERSION" --generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "$VERSION" "${flags[@]}" out/*

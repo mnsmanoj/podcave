@@ -1,0 +1,102 @@
+# Security Scan — the single definition of Pod Cave's security checks.
+#  • Run it by hand on ANY branch: Actions → "Security Scan" → Run workflow → pick a branch.
+#  • Ship (every push/PR) and Release call this same workflow, so they never drift apart.
+name: Security Scan
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+env:
+  GOVULNCHECK_VERSION: v1.10.0
+
+jobs:
+  govulncheck:
+    name: Go vulnerabilities (govulncheck)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Placeholder UI for go:embed (the real UI is not needed to scan Go code)
+        run: mkdir -p web/dist && echo placeholder > web/dist/placeholder.txt
+      - name: govulncheck (reachable vulnerabilities in Go code and dependencies)
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  npm-audit:
+    name: npm audit + registry signatures
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install exactly what is locked (no install scripts)
+        run: npm ci --ignore-scripts --no-fund
+      - name: Known vulnerabilities
+        run: npm audit --audit-level=high
+      - name: Verify package signatures / provenance from the npm registry
+        run: npm audit signatures
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+      - if: matrix.language == 'go'
+        name: Build Go code for analysis
+        run: |
+          mkdir -p web/dist && echo placeholder > web/dist/placeholder.txt
+          go build ./...
+      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          category: /language:${{ matrix.language }}
+
+  osv-scanner:
+    name: OSV-Scanner (Google)
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
