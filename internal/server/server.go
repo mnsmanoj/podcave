@@ -108,6 +108,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/describe", s.handleDescribe)
 	mux.HandleFunc("GET /api/yaml", s.handleYAML)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
+	mux.HandleFunc("POST /api/logs/multi", s.handleMultiLogs)
 
 	mux.HandleFunc("POST /api/pods/delete", s.handleDeletePod)
 	mux.HandleFunc("POST /api/deployments/restart", s.handleRestartDeployment)

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ApiError, qs, sleep, stream } from '../api';
-import type { LogPrefs, Pod, StreamStatus } from '../types';
+import type { LogPrefs, MultiSpec, Pod, StreamStatus } from '../types';
 import { buildMatcher, cx, formatTs, tsMillis } from '../util';
 import { Icon } from './Icons';
 
@@ -9,16 +9,31 @@ interface Line {
   ft: string;
   m: string;
   lvl: 0 | 1 | 2;
+  /** Source id in a merged view, -1 for a single pod. */
+  s: number;
+}
+
+interface Src {
+  id: number;
+  ctx: string;
+  ns: string;
+  pod: string;
+  container: string;
+  state: string;
+  message?: string;
 }
 
 const MAX_LINES = 50_000;
+const MAX_PODS = 10;
 const ROW_H = 20;
 const OVERSCAN = 600;
 const TAILS = [100, 500, 1000, 5000, 10000, 50000];
+const MULTI_TAILS = [100, 500, 1000, 5000];
 const ERR_RE = /\b(error|err|fatal|panic|exception|critical|crit)\b|\blevel=(error|fatal)\b|"level":"(error|fatal)"/i;
 const WARN_RE = /\b(warn|warning)\b|\blevel=warn|"level":"warn/i;
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+const POD_HASH_RE = /^(.+)-[a-z0-9]{6,10}-([a-z0-9]{5})$/;
 
 type RangeKey = 'all' | '5m' | '15m' | '1h' | '6h' | '24h' | 'custom';
 const RANGES: { key: RangeKey; label: string; ms: number }[] = [
@@ -75,6 +90,19 @@ function rowAt(o: Float64Array, y: number): number {
   return lo;
 }
 
+/** web-7d9f8c6b5-abcde becomes web-abcde; names that would clash stay longer. */
+function shortTags(srcs: Src[]): string[] {
+  const short = srcs.map((s) => {
+    const m = POD_HASH_RE.exec(s.pod);
+    return m ? `${m[1]}-${m[2]}` : s.pod;
+  });
+  const count = (arr: string[]) => arr.reduce((m, v) => m.set(v, (m.get(v) ?? 0) + 1), new Map<string, number>());
+  let c = count(short);
+  const out = short.map((v, i) => (c.get(v)! > 1 ? srcs[i].pod : v));
+  c = count(out);
+  return out.map((v, i) => (c.get(v)! > 1 ? `${v}@${srcs[i].ns}` : v));
+}
+
 const STATUS_LABEL: Record<string, string> = {
   connecting: 'Connecting',
   live: 'Live',
@@ -86,21 +114,35 @@ const STATUS_LABEL: Record<string, string> = {
   error: 'Error',
 };
 
+const CHIP_STATE: Record<string, string> = {
+  connecting: 'connecting',
+  reconnecting: 'reconnecting',
+  waiting: 'waiting',
+  auth: 'sign-in needed',
+  ended: 'ended',
+  error: 'error',
+};
+
 interface Props {
-  ctxId: string;
-  ns: string;
-  pod: Pod;
+  ctxId?: string;
+  ns?: string;
+  /** Single-pod mode. */
+  pod?: Pod;
+  /** Merged multi-pod mode. */
+  multi?: MultiSpec;
   prefs: LogPrefs;
   onPrefs: (p: LogPrefs) => void;
   epoch: number;
+  nameOf: (ctxId: string) => string;
 }
 
-export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
-  const tail = prefs.tail ?? 1000;
+export function LogViewer({ ctxId = '', ns = '', pod, multi, prefs, onPrefs, epoch, nameOf }: Props) {
+  const isMulti = !!multi;
+  const tail = isMulti ? (prefs.multiTail ?? 500) : (prefs.tail ?? 1000);
   const timestamps = prefs.timestamps ?? false;
   const wrap = prefs.wrap ?? true;
 
-  const [container, setContainer] = useState(pod.containers[0] ?? '');
+  const [container, setContainer] = useState(isMulti ? '' : (pod?.containers[0] ?? ''));
   const [previous, setPrevious] = useState(false);
   const [restartKey, setRestartKey] = useState(0);
   const [status, setStatus] = useState<StreamStatus>({ state: 'connecting' });
@@ -108,6 +150,9 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
   const buf = useRef<Line[]>([]);
   const dropped = useRef(0);
   const gen = useRef(0);
+  const [sources, setSources] = useState<Src[]>([]);
+  const [hidden, setHidden] = useState<Set<number>>(() => new Set());
+  const [info, setInfo] = useState('');
 
   const [pick, setPick] = useState<RangeKey>('all');
   const [range, setRange] = useState<Range>({ key: 'all' });
@@ -139,14 +184,29 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
   const topRow = useRef(0);
   const prevCols = useRef(0);
 
-  const allContainers = useMemo(
-    () => [...(pod.initContainers ?? []).map((c) => ({ name: c, init: true })), ...pod.containers.map((c) => ({ name: c, init: false }))],
-    [pod.containers, pod.initContainers],
-  );
+  const containerOptions = useMemo(() => {
+    if (multi) return multi.containers.map((c) => ({ name: c, init: false }));
+    if (!pod) return [];
+    return [...(pod.initContainers ?? []).map((c) => ({ name: c, init: true })), ...pod.containers.map((c) => ({ name: c, init: false }))];
+  }, [multi, pod]);
 
   useEffect(() => {
-    if (!allContainers.some((c) => c.name === container) && pod.containers[0]) setContainer(pod.containers[0]);
-  }, [allContainers, container, pod.containers]);
+    if (pod && !containerOptions.some((c) => c.name === container) && pod.containers[0]) setContainer(pod.containers[0]);
+  }, [containerOptions, container, pod]);
+
+  // Pods of a fixed selection that lack the chosen container sit out.
+  const plan = useMemo(() => {
+    if (!multi || multi.deployment) return { send: [], skipped: [] as string[] };
+    const send: { ctx: string; ns: string; pod: string; container: string }[] = [];
+    const skipped: string[] = [];
+    for (const p of multi.pods.slice(0, MAX_PODS)) {
+      const c = container || p.containers[0];
+      if (!c || (container && !p.containers.includes(container))) skipped.push(p.pod);
+      else send.push({ ctx: p.ctxId, ns: p.ns, pod: p.pod, container: c });
+    }
+    return { send, skipped };
+  }, [multi, container]);
+  const specKey = multi ? JSON.stringify([multi.deployment, plan.send]) : `${ctxId}|${ns}|${pod?.name}`;
 
   // The server resumes dropped cluster streams without duplicates. If the
   // connection to Pod Cave itself drops we start clean to stay accurate.
@@ -159,17 +219,24 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
     setVer((v) => v + 1);
     setFollow(true);
     setPaused(false);
+    setSources([]);
+    setInfo('');
     setStatus({ state: 'connecting' });
-    if (!container) return;
+    if (!multi && !container) return;
+    if (multi && !multi.deployment && plan.send.length === 0) {
+      setStatus({ state: 'ended', message: container ? `None of these pods has a ${container} container.` : 'No pods selected.' });
+      return;
+    }
 
     let since: string | undefined;
     let until = Infinity;
     let follow = true;
     let tailN = tail;
     const preset = RANGES.find((r) => r.key === range.key)?.ms ?? 0;
+    const pods = multi ? (multi.deployment ? MAX_PODS : plan.send.length) : 1;
     if (preset) {
       since = new Date(Date.now() - preset).toISOString();
-      tailN = MAX_LINES;
+      tailN = Math.floor(MAX_LINES / pods);
     } else if (range.key === 'custom' && range.from !== undefined) {
       since = new Date(range.from).toISOString();
       tailN = 0;
@@ -188,22 +255,40 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
         setVer((v) => v + 1);
       }
     }, 120);
-    const path =
-      '/api/logs?' +
-      qs({ ctx: ctxId, ns, pod: pod.name, container, tail: tailN, since, follow: follow ? undefined : 'false', previous: previous || undefined });
+
+    const path = multi
+      ? '/api/logs/multi'
+      : '/api/logs?' +
+        qs({ ctx: ctxId, ns, pod: pod?.name, container, tail: tailN, since, follow: follow ? undefined : 'false', previous: previous || undefined });
+    const body = multi
+      ? {
+          pods: multi.deployment ? undefined : plan.send,
+          deployment: multi.deployment ? { ctx: multi.deployment.ctxId, ns: multi.deployment.ns, name: multi.deployment.name } : undefined,
+          container,
+          tail: tailN,
+          since,
+          follow,
+          previous,
+        }
+      : undefined;
 
     (async () => {
       while (!ac.signal.aborted) {
         const done = new AbortController();
         let pastEnd = false;
+        let opened = false;
         try {
           await stream(
             path,
             (e) => {
               if (pastEnd) return;
+              if (multi && !opened) {
+                opened = true;
+                setStatus({ state: 'live' });
+              }
               if (e.type === 'lines') {
                 const b = buf.current;
-                for (const l of e.lines as { t?: string; m: string }[]) {
+                for (const l of e.lines as { t?: string; m: string; s?: number }[]) {
                   const t = l.t ?? '';
                   if (t && tsMillis(t) > until) {
                     pastEnd = true;
@@ -211,7 +296,7 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
                     break;
                   }
                   const m = clean(l.m);
-                  b.push({ t, ft: t ? formatTs(t) : '', m, lvl: level(m) });
+                  b.push({ t, ft: t ? formatTs(t) : '', m, lvl: level(m), s: l.s ?? -1 });
                 }
                 if (b.length > MAX_LINES) {
                   const cut = b.length - MAX_LINES + Math.floor(MAX_LINES / 10);
@@ -219,12 +304,22 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
                   dropped.current += cut;
                 }
                 dirty = true;
+              } else if (e.type === 'source') {
+                const s = e.source;
+                setSources((x) => [...x, { id: s.id, ctx: s.ctx, ns: s.ns, pod: s.pod, container: s.container, state: 'connecting' }]);
+              } else if (e.type === 'info') {
+                setInfo(e.message ?? '');
               } else if (e.type === 'status') {
-                last = e.state;
-                setStatus({ state: e.state, message: e.message });
+                if (multi) {
+                  setSources((x) => x.map((s) => (s.id === e.id ? { ...s, state: e.state, message: e.message } : s)));
+                } else {
+                  last = e.state;
+                  setStatus({ state: e.state, message: e.message });
+                }
               }
             },
             AbortSignal.any([ac.signal, done.signal]),
+            body,
           );
         } catch (err) {
           if (ac.signal.aborted) return;
@@ -232,7 +327,7 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
           if (err instanceof ApiError && err.status < 500) return;
         }
         if (ac.signal.aborted) return;
-        if (pastEnd) {
+        if (pastEnd || (multi && !follow)) {
           setStatus({ state: 'ended', message: 'End of the selected time range' });
           return;
         }
@@ -242,6 +337,7 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
         buf.current = [];
         dropped.current = 0;
         gen.current++;
+        setSources([]);
         dirty = true;
       }
     })();
@@ -249,7 +345,14 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
       ac.abort();
       clearInterval(flush);
     };
-  }, [ctxId, ns, pod.name, container, previous, tail, range, restartKey, epoch]);
+    // plan is captured through specKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [specKey, container, previous, tail, range, restartKey, epoch]);
+
+  const tags = useMemo(() => shortTags(sources), [sources]);
+  const srcIndex = useMemo(() => new Map(sources.map((s, i) => [s.id, i])), [sources]);
+  const tagW = Math.min(26, Math.max(8, ...tags.map((t) => t.length)));
+  const srcPath = (s: Src) => `${nameOf(s.ctx)} / ${s.ns} / ${s.pod} (${s.container})`;
 
   const all = buf.current;
   const viewLen = paused ? Math.max(0, Math.min(all.length, frozenAbs.current - dropped.current)) : all.length;
@@ -258,19 +361,21 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
   const matcher = useMemo(() => buildMatcher(query, regex, caseSensitive), [query, regex, caseSensitive]);
   const matcherErr = matcher instanceof Error ? matcher.message : '';
   const activeMatcher = matcher instanceof RegExp ? matcher : null;
+  const hiddenKey = [...hidden].sort().join(',');
 
-  // Matching lines are tracked by absolute index and scanned incrementally,
+  // Visible lines are tracked by absolute index and scanned incrementally,
   // so filtering a busy stream only tests the lines that just arrived.
-  const filt = useRef<{ re: RegExp; test: RegExp; gen: number; abs: number[]; scanned: number } | null>(null);
+  const filt = useRef<{ key: string; re: RegExp | null; test: RegExp | null; gen: number; abs: number[]; scanned: number } | null>(null);
   const rows = useMemo(() => {
-    if (!activeMatcher) {
+    if (!activeMatcher && hidden.size === 0) {
       filt.current = null;
       return null;
     }
     const d = dropped.current;
     let f = filt.current;
-    if (!f || f.re !== activeMatcher || f.gen !== gen.current) {
-      f = { re: activeMatcher, test: new RegExp(activeMatcher.source, activeMatcher.flags.replace('g', '')), gen: gen.current, abs: [], scanned: d };
+    if (!f || f.re !== activeMatcher || f.key !== hiddenKey || f.gen !== gen.current) {
+      const test = activeMatcher ? new RegExp(activeMatcher.source, activeMatcher.flags.replace('g', '')) : null;
+      f = { key: hiddenKey, re: activeMatcher, test, gen: gen.current, abs: [], scanned: d };
       filt.current = f;
     }
     let head = 0;
@@ -278,7 +383,10 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
     if (head) f.abs.splice(0, head);
     if (f.scanned < d) f.scanned = d;
     const end = d + viewLen;
-    for (let a = f.scanned; a < end; a++) if (f.test.test(all[a - d].m)) f.abs.push(a);
+    for (let a = f.scanned; a < end; a++) {
+      const l = all[a - d];
+      if (!hidden.has(l.s) && (!f.test || f.test.test(l.m))) f.abs.push(a);
+    }
     if (end > f.scanned) f.scanned = end;
     const out: number[] = [];
     for (const a of f.abs) {
@@ -286,7 +394,7 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
       out.push(a - d);
     }
     return out;
-  }, [activeMatcher, ver, viewLen]);
+  }, [activeMatcher, hiddenKey, ver, viewLen]);
 
   const n = rows ? rows.length : viewLen;
   const lineAt = (r: number) => (rows ? rows[r] : r);
@@ -394,10 +502,21 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
     setFollow(true);
   };
 
+  const toggleSource = (id: number) => {
+    setHidden((h) => {
+      const next = new Set(h);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setFollow(true);
+  };
+
   const showInContext = (abs: number) => {
     pendingJump.current = abs;
     setFollow(false);
     setQuery('');
+    setHidden(new Set());
   };
 
   const togglePause = () => {
@@ -428,12 +547,14 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
     const out: string[] = [];
     for (let r = 0; r < n; r++) {
       const l = all[lineAt(r)];
-      out.push((timestamps && l.t ? l.t + ' ' : '') + l.m);
+      const si = srcIndex.get(l.s);
+      out.push((timestamps && l.t ? l.t + ' ' : '') + (si !== undefined ? `[${tags[si]}] ` : '') + l.m);
     }
     const url = URL.createObjectURL(new Blob([out.join('\n') + '\n'], { type: 'text/plain' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${pod.name}_${container}${previous ? '_previous' : ''}${rows ? '_filtered' : ''}.log`;
+    const base = multi ? (multi.deployment ? `deployment_${multi.deployment.name}` : `${sources.length}_pods`) : `${pod?.name}_${container}`;
+    a.download = `${base}${previous ? '_previous' : ''}${rows ? '_filtered' : ''}.log`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -448,6 +569,7 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
       const l = all[i];
       if (!l) continue;
       const a = d + i;
+      const si = srcIndex.get(l.s);
       list.push(
         <div
           key={a}
@@ -464,6 +586,12 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
             <span className="lv-num">{a + 1}</span>
           )}
           {timestamps && <span className="lv-ts">{l.ft}</span>}
+          {isMulti && (
+            <span className={cx('lv-tag', si !== undefined && `src-${si % 10}`)} title={si !== undefined ? srcPath(sources[si]) : undefined}>
+              <i className="dot" />
+              {si !== undefined ? tags[si] : ''}
+            </span>
+          )}
           <span className="lv-msg" style={wrap && cols ? { width: `calc(${cols}ch + 0.5px)` } : undefined}>
             {highlight(l.m, activeMatcher)}
           </span>
@@ -472,7 +600,15 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
     }
   }
 
-  const st = status.state;
+  // In a merged view the overall state comes from the individual pods.
+  const streaming = sources.filter((s) => s.state === 'live' || s.state === 'live-resumed').length;
+  let st = status.state;
+  if (isMulti && st === 'live') {
+    if (streaming > 0) st = 'live';
+    else if (sources.length && sources.every((s) => s.state === 'ended' || s.state === 'error')) st = 'ended';
+    else if (sources.some((s) => s.state === 'auth')) st = 'auth';
+    else st = sources.length ? (sources.some((s) => s.state === 'waiting') ? 'waiting' : 'connecting') : 'live';
+  }
   const live = st === 'live' || st === 'live-resumed';
   const rangeText =
     range.key === 'custom' && range.from !== undefined
@@ -483,7 +619,7 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
 
   let empty: ReactNode = null;
   if (n === 0) {
-    if (rows && viewLen > 0) empty = <>No lines match <span className="mono">{query}</span></>;
+    if (rows && viewLen > 0) empty = query ? <>No lines match <span className="mono">{query}</span></> : 'All pods are hidden.';
     else if (st === 'connecting')
       empty = (
         <>
@@ -492,21 +628,26 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
       );
     else if (live) empty = range.key === 'all' ? 'Waiting for new lines' : 'No lines in this range yet. New lines will show up here.';
     else if (st === 'ended' && range.key !== 'all') empty = 'No lines in this time range.';
-    else empty = status.message || 'No logs.';
+    else empty = status.message || (isMulti && multi?.deployment && sources.length === 0 ? 'This deployment has no pods right now.' : 'No logs.');
   }
+
+  const tails = isMulti ? MULTI_TAILS : TAILS;
 
   return (
     <div className="logviewer">
       <div className="lv-toolbar">
         <div className="lv-row">
-          <select className="select select-sm" value={container} onChange={(e) => setContainer(e.target.value)} title="Container">
-            {allContainers.map((c) => (
-              <option key={c.name} value={c.name}>
-                {c.name}
-                {c.init ? ' (init)' : ''}
-              </option>
-            ))}
-          </select>
+          {(containerOptions.length > 0 || isMulti) && (
+            <select className="select select-sm" value={container} onChange={(e) => setContainer(e.target.value)} title="Container">
+              {isMulti && <option value="">Main container</option>}
+              {containerOptions.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                  {c.init ? ' (init)' : ''}
+                </option>
+              ))}
+            </select>
+          )}
           <select className="select select-sm" value={pick} onChange={(e) => pickRange(e.target.value as RangeKey)} title="Time range">
             {RANGES.map((r) => (
               <option key={r.key} value={r.key}>
@@ -515,10 +656,15 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
             ))}
           </select>
           {range.key === 'all' && pick === 'all' && (
-            <select className="select select-sm" value={tail} onChange={(e) => onPrefs({ ...prefs, tail: Number(e.target.value) })} title="How many recent lines to load">
-              {TAILS.map((t) => (
+            <select
+              className="select select-sm"
+              value={tail}
+              onChange={(e) => onPrefs(isMulti ? { ...prefs, multiTail: Number(e.target.value) } : { ...prefs, tail: Number(e.target.value) })}
+              title={isMulti ? 'How many recent lines to load from each pod' : 'How many recent lines to load'}
+            >
+              {tails.map((t) => (
                 <option key={t} value={t}>
-                  Last {t.toLocaleString()} lines
+                  Last {t.toLocaleString()} lines{isMulti ? ' per pod' : ''}
                 </option>
               ))}
             </select>
@@ -536,7 +682,7 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
           <button className={cx('btn btn-ghost btn-sm btn-icon', paused && 'on')} onClick={togglePause} title={paused ? 'Resume' : 'Pause (new lines keep buffering)'}>
             <Icon name={paused ? 'play' : 'pause'} size={15} />
           </button>
-          <button className="btn btn-ghost btn-sm btn-icon" onClick={download} title={rows ? 'Download matching lines' : 'Download'}>
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={download} title={rows ? 'Download visible lines' : 'Download'}>
             <Icon name="download" size={15} />
           </button>
           <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setRestartKey((k) => k + 1)} title="Reload">
@@ -566,13 +712,41 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
           </div>
         )}
 
+        {isMulti && (sources.length > 0 || plan.skipped.length > 0) && (
+          <div className="lv-row lv-chips">
+            {sources.map((s, i) => {
+              const off = hidden.has(s.id);
+              const note = CHIP_STATE[s.state];
+              return (
+                <button
+                  key={s.id}
+                  className={cx('lv-chip', `src-${i % 10}`, off && 'off', (s.state === 'auth' || s.state === 'error') && 'bad')}
+                  onClick={() => toggleSource(s.id)}
+                  title={`${srcPath(s)}${s.message ? `\n${s.message}` : ''}\nClick to ${off ? 'show' : 'hide'} this pod's lines`}
+                >
+                  <i className="dot" />
+                  <span className="lv-chip-name">{tags[i]}</span>
+                  {note && <span className="lv-chip-note">{note}</span>}
+                </button>
+              );
+            })}
+            {plan.skipped.map((p) => (
+              <span key={p} className="lv-chip off" title={`${p} has no ${container} container`}>
+                <span className="lv-chip-name">{p}</span>
+                <span className="lv-chip-note">no {container}</span>
+              </span>
+            ))}
+            {info && <span className="muted small">{info}</span>}
+          </div>
+        )}
+
         <div className="lv-row">
           <div className={cx('field-box lv-search', matcherErr && 'invalid')}>
             <Icon name="search" size={14} />
             <input
               ref={searchRef}
               value={query}
-              placeholder="Filter lines"
+              placeholder={isMulti ? 'Filter lines across all pods' : 'Filter lines'}
               onChange={(e) => changeQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Escape' && changeQuery('')}
               title={matcherErr || 'Only lines that match are shown. Ctrl+F to focus, Esc to clear.'}
@@ -597,10 +771,15 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
       </div>
 
       <div className={cx('lv-scroll', wrap ? 'wrap' : 'nowrap')} ref={scroller} onScroll={onScroll} tabIndex={0}>
-        <div className="lv-canvas" ref={canvas} style={{ height: offsets[n] + 12, ['--num-w' as string]: `${Math.max(digits, 3)}ch` }}>
+        <div
+          className="lv-canvas"
+          ref={canvas}
+          style={{ height: offsets[n] + 12, ['--num-w' as string]: `${Math.max(digits, 3)}ch`, ['--tag-w' as string]: `${tagW}ch` }}
+        >
           <div className="lv-line lv-probe" aria-hidden>
             <span className="lv-num" />
             {timestamps && <span className="lv-ts" />}
+            {isMulti && <span className="lv-tag" />}
             <span className="lv-msg" ref={probeMsg} />
             <span className="lv-chars" ref={probeChars}>
               {'0'.repeat(100)}
@@ -623,12 +802,17 @@ export function LogViewer({ ctxId, ns, pod, prefs, onPrefs, epoch }: Props) {
           <span className="dot" />
           {paused ? 'Paused' : (STATUS_LABEL[st] ?? st)}
         </span>
+        {isMulti && sources.length > 0 && (
+          <span>
+            {streaming} of {sources.length} pods streaming
+          </span>
+        )}
         {rangeText && <span>{rangeText}</span>}
         {d > 0 && <span>{d.toLocaleString()} older lines dropped</span>}
         {pendingNew > 0 && <span className="strong">{pendingNew.toLocaleString()} new while paused</span>}
         {status.message && !live && st !== 'connecting' && !(st === 'ended' && rangeText) && <span className="lv-status-msg">{status.message}</span>}
         <span className="lv-status-end mono">
-          {container}
+          {isMulti ? [...new Set(sources.map((s) => nameOf(s.ctx)))].join(', ') : container}
           {previous ? ' (previous)' : ''}
         </span>
       </div>

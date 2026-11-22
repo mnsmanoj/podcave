@@ -95,7 +95,8 @@ export function qs(params: Record<string, string | number | boolean | undefined 
 
 // Reads an NDJSON stream. Resolves when the server ends it; a watchdog aborts
 // if nothing (not even a ping) arrives for 60s so callers can reconnect.
-export async function stream(path: string, onEvent: (e: any) => void, signal: AbortSignal): Promise<void> {
+// With a body the request is a JSON POST.
+export async function stream(path: string, onEvent: (e: any) => void, signal: AbortSignal, body?: unknown): Promise<void> {
   const inner = new AbortController();
   const both = AbortSignal.any([signal, inner.signal]);
   let watchdog = setTimeout(() => inner.abort(), 60_000);
@@ -104,7 +105,13 @@ export async function stream(path: string, onEvent: (e: any) => void, signal: Ab
     watchdog = setTimeout(() => inner.abort(), 60_000);
   };
   try {
-    const r = await fetch(path, { headers: { Authorization: 'Bearer ' + session() }, signal: both, cache: 'no-store' });
+    const r = await fetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { Authorization: 'Bearer ' + session(), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: both,
+      cache: 'no-store',
+    });
     await check(r);
     if (!r.body) return;
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();

@@ -70,6 +70,24 @@ export interface LogPrefs {
   timestamps?: boolean;
   wrap?: boolean;
   tail?: number;
+  /** Lines loaded per pod in a merged multi-pod view. */
+  multiTail?: number;
+}
+
+/** A pod picked for the merged log view. */
+export interface SelPod {
+  ctxId: string;
+  ns: string;
+  pod: string;
+  containers: string[];
+}
+
+export interface MultiSpec {
+  pods: SelPod[];
+  /** Follow every pod of this deployment instead of a fixed list. */
+  deployment?: { ctxId: string; ns: string; name: string };
+  /** Container names offered in the picker. */
+  containers: string[];
 }
 
 export type ThemePref = 'system' | 'light' | 'dark';
@@ -114,4 +132,5 @@ export interface StreamStatus {
 
 export type DrawerTarget =
   | { kind: 'pod'; name: string; tab: 'logs' | 'describe' | 'yaml'; snapshot?: Pod }
-  | { kind: 'deployment'; name: string; tab: 'pods' | 'describe' | 'yaml' };
+  | { kind: 'deployment'; name: string; tab: 'pods' | 'describe' | 'yaml' }
+  | ({ kind: 'logs' } & MultiSpec);
