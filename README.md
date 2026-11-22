@@ -1,14 +1,14 @@
 # 🦇 Pod Cave
 
-A local, single-file Kubernetes "Cave Computer" for AKS (and any other cluster).
-Point it at your kubeconfig(s), pick a cluster → namespace → **Pods / Deployments**,
-and get live logs with search, `kubectl describe` output, and YAML — in a dark,
-bat-themed UI. No install, no admin rights, nothing leaves your machine.
+A local, single-file Kubernetes dashboard for AKS (and any other cluster).
+Point it at your kubeconfig(s), pick a cluster, then a namespace, then **Pods** or **Deployments**,
+and get live logs you can filter by text and time, `kubectl describe` output, YAML and port-forwarding
+in a clean dark or light UI. No install, no admin rights, nothing leaves your machine.
 
 ## Download
 
-Grab the binary for your machine from the [Releases](https://github.com/mnsmanoj/podcave/releases) page —
-no Go, Node.js or installer needed:
+Grab the binary for your machine from the [Releases](https://github.com/mnsmanoj/podcave/releases) page.
+No Go, Node.js or installer needed:
 
 | File | For |
 |---|---|
@@ -27,7 +27,7 @@ gh attestation verify .\podcave-v1.0.0-windows-amd64.exe --repo mnsmanoj/podcave
 
 Binaries are not code-signed yet: on Windows choose *More info → Run anyway* (or Properties → Unblock);
 on macOS/Linux run `chmod +x podcave-*` and on macOS also `xattr -d com.apple.quarantine podcave-*`.
-On macOS/Linux, paste the kubeconfig path (the Browse… dialog is Windows-only) and note that imported
+On macOS/Linux, paste the kubeconfig path (the Browse dialog is Windows-only) and note that imported
 copies are protected by file permissions (0600) rather than DPAPI.
 
 ## Run it
@@ -36,7 +36,7 @@ copies are protected by file permissions (0600) rather than DPAPI.
 .\podcave.exe
 ```
 
-A console window opens and your browser launches signed in. Keep the console open —
+A console window opens and your browser launches signed in. Keep the console open,
 it *is* the app. In the console:
 
 | Key | Action |
@@ -48,29 +48,46 @@ Options: `--port 8899` (fixed port), `--no-browser`, `--data-dir <path>`, `--ver
 
 ## First launch
 
-The **Kubeconfig Vault** opens automatically. Add one or more kubeconfigs:
+The **Kubeconfigs** screen opens automatically. Add one or more kubeconfigs:
 
-- **Link a file** (recommended) — e.g. `C:\Users\you\.kube\config`. Read in place every
-  time, so `az aks get-credentials` updates show up automatically. Use **Browse…** for
+- **Use a file on disk** (recommended), e.g. `C:\Users\you\.kube\config`. Read in place every
+  time, so `az aks get-credentials` updates show up automatically. **Browse** opens
   the native Windows file picker.
-- **Import a copy** — upload or paste YAML. Stored encrypted with Windows DPAPI.
+- **Import an encrypted copy**: upload or paste YAML. Stored encrypted with Windows DPAPI.
 
-Pod Cave remembers your kubeconfigs, last cluster, namespace per cluster, tab, log
+Pod Cave reads the clusters in the file before saving and shows each one by its context name.
+You can add an optional **label** per cluster, so a context called `hhr` shows up as
+`hhr - nonprod`. Labels can be changed later in **Kubeconfigs**.
+
+Pod Cave remembers your kubeconfigs, labels, last cluster, namespace per cluster, tab, log
 settings and drawer width in `%APPDATA%\PodCave\config.json`.
 
 ## Features
 
 - Cluster picker across all kubeconfigs (defaults to each file's `current-context`).
 - Namespace list; if you can't list namespaces (restricted RBAC), add the ones you use.
-- **Pods** tab: live status (CrashLoopBackOff, Init:…, Terminating…), ready, restarts, age,
+- **Pods** tab: live status (CrashLoopBackOff, Init, Terminating and so on), ready, restarts, age,
   node, status filter chips, sorting, search (`/`).
 - **Deployments** tab: ready bar, up-to-date/available, images, and the pods behind each one.
-- **Logs (Cave Computer)**: live follow, container picker incl. init containers, previous
-  container, tail size up to 50k lines, find with highlight / regex / match-case /
-  "only matching lines", next/prev match (Enter / Shift+Enter, `Ctrl+F`), timestamps,
-  wrap, pause, download. Error/warn lines are colour-coded.
-- **Describe** (real `kubectl describe` output incl. events) and **YAML** with find + copy.
-- **Utility Belt** (write actions): delete pod, rollout-restart and scale deployments.
+- **Logs**: live follow with line numbers, container picker including init containers,
+  previous container, and up to 50k recent lines.
+  - Long lines wrap to the panel width (follows resizing and browser zoom), so there is no
+    sideways scrolling. Wrapping can be turned off.
+  - **Filter**: typing shows only the matching lines, with a "N of M lines" count. Match case and
+    regex are optional. Click a line number to clear the filter and see that line in context.
+  - **Time range**: last 5 min, 15 min, 1 hour, 6 hours, 24 hours, or a custom From and To.
+    The range is fetched from the cluster, so it can reach further back than the loaded lines.
+    Without a To time the view keeps following new lines.
+  - Timestamps, pause, download (only the matching lines while filtering). Error and warning
+    lines are marked in the gutter. **Focus** (button or `F`) fills the window; `Esc` returns.
+- **Describe** (real `kubectl describe` output including events) and **YAML** with find and copy.
+- **Port-forward** (Ops Mode): **Forward** on a pod is `kubectl -n <ns> port-forward
+  pod/<pod> <local>:<pod port>`. Pick the pod port (declared container ports are listed),
+  choose a local port or leave it empty for a free one. Active forwards live in the
+  **Forwards** tray (open in browser, copy address, stop). Forwards listen on `127.0.0.1`
+  only, reuse your kubelogin sign-in, and close when you return to Night Watch or quit.
+- **Ops Mode** (write actions): delete pod, rollout-restart and scale deployments, port-forward.
+- Monochrome dark and light themes (follows Windows by default; toggle in the header).
 
 ## Safety model
 
@@ -80,8 +97,9 @@ settings and drawer width in `%APPDATA%\PodCave\config.json`.
 | Other websites / tabs | Requests need a bearer session token held only in that tab (no cookies), Host header must be `127.0.0.1`/`localhost` (blocks DNS rebinding), cross-site and foreign-origin requests are rejected, strict CSP, no framing. |
 | Sign-in link | Single-use, expires in 10 minutes, carried in the URL `#fragment` (never sent over HTTP) and removed from the address bar immediately. |
 | Credentials | Kubeconfig contents and tokens stay in the backend; never sent to the browser or logged. Imported kubeconfigs are encrypted with DPAPI (your Windows user only). |
-| Accidental changes | Always starts in read-only **Night Watch**. Arming the Utility Belt is per session, enforced server-side, and every action requires typing the resource name. You can never do more than your own Kubernetes RBAC allows. |
-| Outbound traffic | Only to the API servers in your kubeconfigs. No telemetry, no CDN — all UI assets are embedded in the exe. TLS verification follows your kubeconfig (a red badge warns about `insecure-skip-tls-verify`). |
+| Accidental changes | Always starts in read-only **Night Watch**. Switching to **Ops Mode** is per session and enforced server-side; destructive actions require typing the resource name. You can never do more than your own Kubernetes RBAC allows. |
+| Port-forwards | Ops Mode only (enforced server-side), bound to `127.0.0.1`, max 20, all closed when leaving Ops Mode or quitting. |
+| Outbound traffic | Only to the API servers in your kubeconfigs. No telemetry, no CDN; all UI assets are embedded in the exe. TLS verification follows your kubeconfig (the cluster picker warns about `insecure-skip-tls-verify`). |
 | Admin rights | None needed. No installer, service, or registry changes. |
 
 ## AKS sign-in & "logged out" handling
@@ -92,7 +110,7 @@ Pod Cave runs your kubeconfig's `kubelogin` exec plugin itself (like kubectl doe
   still answers 401, Pod Cave refreshes once and retries automatically.
 - When a sign-in is needed, the **Cave Signal** banner appears:
   - device-code logins show the code and a link to `microsoft.com/devicelogin` right in the UI;
-  - for `azurecli` mode you get **Re-login (browser)** / **Re-login (device code)** buttons
+  - for `azurecli` mode you get **Sign in with browser** and **Use device code** buttons
     (runs `az login` for you, with the tenant from your kubeconfig) plus **Retry**.
 - Pod lists and live logs reconnect on their own afterwards. Log streams resume from the
   last timestamp without gaps or duplicate lines.
@@ -133,7 +151,7 @@ web/                    React + Vite UI (embedded into the exe)
 
 Every Action is pinned to a full commit SHA, jobs get least-privilege permissions, and only the Publish job can write.
 Dependabot keeps Go, npm and Action versions current. Code-scanning results appear under the repo's
-**Security** tab. The Publish job runs in a `release` environment — add required reviewers to it under
+**Security** tab. The Publish job runs in a `release` environment; add required reviewers to it under
 *Settings → Environments* if you want a manual approval before anything is published.
 
 The bat logo and artwork are original to this project.

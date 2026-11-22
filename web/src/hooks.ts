@@ -59,7 +59,7 @@ export function useWatch<T extends { name: string }>(path: string | null) {
           }
         }
         if (ac.signal.aborted) return;
-        setStatus({ state: 'reconnecting', message: 'Connection interrupted; reconnecting…' });
+        setStatus({ state: 'reconnecting', message: 'Connection lost. Reconnecting.' });
         await sleep(delay, ac.signal);
         delay = Math.min(delay * 2, 15000);
       }

@@ -1,51 +1,58 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { useOutsideClick } from '../hooks';
-import type { AuthEvent, ContextInfo } from '../types';
-import { cx } from '../util';
+import type { AuthEvent, ContextInfo, ThemePref } from '../types';
+import { cx, displayName } from '../util';
 import { BatEmblem } from './Bat';
+import { Icon } from './Icons';
 
 interface Props {
   contexts: ContextInfo[];
   current: ContextInfo | undefined;
+  labels: Record<string, string>;
   armed: boolean;
   authEvents: Record<string, AuthEvent>;
+  theme: ThemePref;
+  forwards: ReactNode;
   onContext: (id: string) => void;
   onArm: () => void;
   onDisarm: () => void;
   onVault: () => void;
+  onTheme: (t: ThemePref) => void;
 }
 
-export function TopBar({ contexts, current, armed, authEvents, onContext, onArm, onDisarm, onVault }: Props) {
+const THEME_NEXT: Record<ThemePref, ThemePref> = { system: 'light', light: 'dark', dark: 'system' };
+const THEME_ICON = { system: 'monitor', light: 'sun', dark: 'moon' } as const;
+
+export function TopBar({ contexts, current, labels, armed, authEvents, theme, forwards, onContext, onArm, onDisarm, onVault, onTheme }: Props) {
   return (
-    <header className={cx('topbar', armed && 'armed')}>
+    <header className="header">
       <div className="brand">
-        <BatEmblem size={40} />
-        <div className="wordmark">
-          <span className="w1">POD CAVE</span>
-          <span className="w2">CAVE COMPUTER · KUBERNETES</span>
-        </div>
+        <BatEmblem size={26} />
+        <span className="brand-name">Pod Cave</span>
       </div>
-      <ContextPicker contexts={contexts} current={current} authEvents={authEvents} onContext={onContext} />
-      <div className="top-actions">
-        {armed ? (
-          <button className="mode armed" onClick={onDisarm} title="Write actions are enabled. Click to return to read-only Night Watch.">
-            <span className="mode-ico">⚠</span>
-            <span>
-              UTILITY BELT ARMED
-              <small>click to disarm</small>
-            </span>
+      <ContextPicker contexts={contexts} current={current} labels={labels} authEvents={authEvents} onContext={onContext} />
+      <div className="header-actions">
+        <div className="seg" role="radiogroup" aria-label="Mode">
+          <button className={cx(!armed && 'on')} onClick={() => armed && onDisarm()} role="radio" aria-checked={!armed} title="Read-only. Nothing in the cluster can be changed.">
+            Night Watch
           </button>
-        ) : (
-          <button className="mode" onClick={onArm} title="Read-only. Click to enable write actions for this session.">
-            <span className="mode-ico">🛡</span>
-            <span>
-              NIGHT WATCH
-              <small>read-only</small>
-            </span>
+          <button
+            className={cx(armed && 'on ops')}
+            onClick={() => !armed && onArm()}
+            role="radio"
+            aria-checked={armed}
+            title="Allows deleting pods, restarting and scaling deployments, and port-forwarding."
+          >
+            {armed && <span className="ops-dot" />}
+            Ops Mode
           </button>
-        )}
-        <button className="vault-btn" onClick={onVault} title="Manage kubeconfigs">
-          <span>🔑</span> Kubeconfigs
+        </div>
+        {forwards}
+        <button className="btn btn-ghost btn-icon" onClick={() => onTheme(THEME_NEXT[theme])} title={`Theme: ${theme}`}>
+          <Icon name={THEME_ICON[theme]} />
+        </button>
+        <button className="btn" onClick={onVault} title="Manage kubeconfigs">
+          Kubeconfigs
         </button>
       </div>
     </header>
@@ -55,11 +62,13 @@ export function TopBar({ contexts, current, armed, authEvents, onContext, onArm,
 function ContextPicker({
   contexts,
   current,
+  labels,
   authEvents,
   onContext,
 }: {
   contexts: ContextInfo[];
   current: ContextInfo | undefined;
+  labels: Record<string, string>;
   authEvents: Record<string, AuthEvent>;
   onContext: (id: string) => void;
 }) {
@@ -72,12 +81,12 @@ function ContextPicker({
     const f = q.trim().toLowerCase();
     const m = new Map<string, ContextInfo[]>();
     for (const c of contexts) {
-      if (f && !c.name.toLowerCase().includes(f) && !c.cluster.toLowerCase().includes(f) && !c.sourceName.toLowerCase().includes(f)) continue;
-      const key = c.sourceName;
-      m.set(key, [...(m.get(key) ?? []), c]);
+      const hay = [c.name, labels[c.id] ?? '', c.cluster, c.sourceName].join(' ').toLowerCase();
+      if (f && !hay.includes(f)) continue;
+      m.set(c.sourceName, [...(m.get(c.sourceName) ?? []), c]);
     }
     return Array.from(m.entries());
-  }, [contexts, q]);
+  }, [contexts, labels, q]);
 
   const host = (s: string) => {
     try {
@@ -89,42 +98,49 @@ function ContextPicker({
 
   return (
     <div className="ctx-picker" ref={ref}>
-      <button className={cx('ctx-current', open && 'open')} onClick={() => setOpen(!open)} disabled={!contexts.length}>
-        <span className="ctx-label">CLUSTER</span>
-        <span className="ctx-name">{current ? current.name : 'No contexts'}</span>
-        {current && authEvents[current.id] && <span className="ctx-alert" title="Sign-in needed">●</span>}
-        <span className="caret">▾</span>
+      <button className={cx('ctx-btn', open && 'open')} onClick={() => setOpen(!open)} disabled={!contexts.length} title={current ? `${current.cluster} (${current.sourceName})` : undefined}>
+        <span className="ctx-btn-name">{current ? displayName(current.name, labels[current.id]) : 'No clusters'}</span>
+        {current && authEvents[current.id] && <span className="alert-dot" title="Sign-in needed" />}
+        <Icon name="chevronDown" size={14} />
       </button>
       {open && (
-        <div className="ctx-menu">
-          <input autoFocus placeholder="Search contexts…" value={q} onChange={(e) => setQ(e.target.value)} />
-          <div className="ctx-groups">
+        <div className="popover ctx-menu">
+          <div className="field-box">
+            <Icon name="search" size={14} />
+            <input autoFocus placeholder="Find a cluster" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <div className="menu-scroll">
             {groups.map(([src, list]) => (
               <div key={src}>
-                <div className="ctx-group">{src}</div>
+                <div className="menu-group">{src}</div>
                 {list.map((c) => (
                   <button
                     key={c.id}
-                    className={cx('ctx-item', current?.id === c.id && 'on')}
+                    className={cx('menu-item', current?.id === c.id && 'on')}
                     onClick={() => {
                       onContext(c.id);
                       setOpen(false);
                       setQ('');
                     }}
                   >
-                    <span className="ctx-item-name">
-                      {c.name}
-                      {authEvents[c.id] && <span className="ctx-alert">●</span>}
+                    <span className="menu-item-title">
+                      <span className="ellipsis">
+                        {c.name}
+                        {labels[c.id]?.trim() && <span className="label-part"> - {labels[c.id].trim()}</span>}
+                      </span>
+                      {authEvents[c.id] && <span className="alert-dot" />}
+                      {current?.id === c.id && <Icon name="check" size={14} />}
                     </span>
-                    <span className="ctx-item-meta">
-                      {host(c.server)} · <span className="badge">{c.authType === 'kubelogin' ? `kubelogin ${c.loginMode ?? ''}` : c.authType}</span>
-                      {c.insecure && <span className="badge bad">TLS verify off</span>}
+                    <span className="menu-item-meta">
+                      <span className="ellipsis">{host(c.server)}</span>
+                      <span>{c.authType === 'kubelogin' ? `kubelogin, ${c.loginMode ?? 'default'}` : c.authType}</span>
+                      {c.insecure && <span className="bad-text">TLS verify off</span>}
                     </span>
                   </button>
                 ))}
               </div>
             ))}
-            {groups.length === 0 && <div className="muted pad">No matching contexts.</div>}
+            {groups.length === 0 && <div className="menu-empty">No matching clusters</div>}
           </div>
         </div>
       )}

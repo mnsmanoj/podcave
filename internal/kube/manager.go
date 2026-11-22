@@ -64,17 +64,39 @@ type Manager struct {
 	hub     *events.Hub
 	version string
 
+	Forwards *Forwards
+
 	mu      sync.Mutex
 	sources map[string]*loadedSource
 	loginMu sync.Mutex
 }
 
 func NewManager(st *store.Store, hub *events.Hub, version string) *Manager {
-	return &Manager{st: st, hub: hub, version: version, sources: map[string]*loadedSource{}}
+	return &Manager{st: st, hub: hub, version: version, sources: map[string]*loadedSource{}, Forwards: NewForwards(hub)}
 }
 
 // ParseKubeconfig validates kubeconfig bytes and returns the context names.
 func ParseKubeconfig(data []byte) ([]string, error) {
+	ctxs, err := PreviewKubeconfig(data)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(ctxs))
+	for i, c := range ctxs {
+		names[i] = c.Name
+	}
+	return names, nil
+}
+
+type ContextPreview struct {
+	Name      string `json:"name"`
+	Cluster   string `json:"cluster"`
+	Server    string `json:"server"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// PreviewKubeconfig lists the contexts in a kubeconfig without saving anything.
+func PreviewKubeconfig(data []byte) ([]ContextPreview, error) {
 	cfg, err := clientcmd.Load(data)
 	if err != nil {
 		return nil, fmt.Errorf("not a valid kubeconfig: %w", err)
@@ -82,12 +104,16 @@ func ParseKubeconfig(data []byte) ([]string, error) {
 	if len(cfg.Contexts) == 0 {
 		return nil, errors.New("kubeconfig has no contexts")
 	}
-	names := make([]string, 0, len(cfg.Contexts))
-	for n := range cfg.Contexts {
-		names = append(names, n)
+	out := make([]ContextPreview, 0, len(cfg.Contexts))
+	for name, c := range cfg.Contexts {
+		p := ContextPreview{Name: name, Cluster: c.Cluster, Namespace: c.Namespace}
+		if cl := cfg.Clusters[c.Cluster]; cl != nil {
+			p.Server = cl.Server
+		}
+		out = append(out, p)
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // refreshLocked syncs loaded sources with the store, reloading changed files.
@@ -321,7 +347,7 @@ func (m *Manager) retryToken(cl *Cluster) {
 
 func (m *Manager) runAzLogin(cl *Cluster, az string, args []string) {
 	id := cl.Info.ID
-	m.hub.PublishAuth(id, events.AuthPending, "Azure sign-in started. Complete it in the browser window that opened…", "", "")
+	m.hub.PublishAuth(id, events.AuthPending, "Azure sign-in started. Complete it in the browser window that opened.", "", "")
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, az, args...)

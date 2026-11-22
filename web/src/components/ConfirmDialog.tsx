@@ -19,9 +19,10 @@ export function ConfirmDialog({ title, children, confirmText, typeToConfirm, dan
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const input = useRef<HTMLInputElement>(null);
+  const primary = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    input.current?.focus();
+    (input.current ?? primary.current)?.focus();
     const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     document.addEventListener('keydown', h);
     return () => document.removeEventListener('keydown', h);
@@ -44,30 +45,45 @@ export function ConfirmDialog({ title, children, confirmText, typeToConfirm, dan
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={cx('modal', danger && 'danger')} role="dialog" aria-modal="true">
-        <h3>{title}</h3>
-        <div className="modal-body">{children}</div>
-        {replicas !== undefined && (
-          <label className="field">
-            <span>Replicas</span>
-            <input type="number" min={0} max={500} value={rep} onChange={(e) => setRep(Number(e.target.value))} />
-          </label>
-        )}
-        {typeToConfirm && (
-          <label className="field">
-            <span>
-              Type <b className="mono">{typeToConfirm}</b> to confirm
-            </span>
-            <input ref={input} value={typed} onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()} spellCheck={false} autoComplete="off" />
-          </label>
-        )}
-        {err && <div className="panel-error">{err}</div>}
-        <div className="modal-actions">
+      <div className="modal" role="dialog" aria-modal="true">
+        <div className="modal-head">
+          <div className="grow">
+            <h3>{title}</h3>
+          </div>
+        </div>
+        <div className="modal-body">
+          {children}
+          {replicas !== undefined && (
+            <label className="field">
+              <span className="field-label">Replicas</span>
+              <input className="input mono" type="number" min={0} max={500} value={rep} onChange={(e) => setRep(Number(e.target.value))} />
+            </label>
+          )}
+          {typeToConfirm && (
+            <label className="field">
+              <span className="field-label">
+                Type <span className="mono">{typeToConfirm}</span> to confirm
+              </span>
+              <input
+                ref={input}
+                className="input mono"
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && go()}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </label>
+          )}
+          {err && <div className="panel-error" style={{ margin: '12px 0 0' }}>{err}</div>}
+        </div>
+        <div className="modal-foot">
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className={cx('btn', danger ? 'danger' : 'primary')} disabled={!ok || busy} onClick={go}>
-            {busy ? 'Working…' : confirmText}
+          <button ref={primary} className={cx('btn', danger ? 'btn-danger solid' : 'btn-primary')} disabled={!ok || busy} onClick={go}>
+            {busy && <span className="spinner" />}
+            {busy ? 'Working' : confirmText}
           </button>
         </div>
       </div>

@@ -76,7 +76,12 @@ func (s *Server) LaunchURL() string {
 
 func (s *Server) Serve() error { return s.srv.Serve(s.ln) }
 
-func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.Kube != nil {
+		s.Kube.Forwards.StopAll()
+	}
+	return s.srv.Shutdown(ctx)
+}
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
@@ -90,6 +95,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/sources/suggest", s.handleSuggest)
 	mux.HandleFunc("POST /api/sources/file", s.handleAddFile)
 	mux.HandleFunc("POST /api/sources/import", s.handleImport)
+	mux.HandleFunc("POST /api/sources/preview", s.handlePreview)
 	mux.HandleFunc("POST /api/sources/browse", s.handleBrowse)
 	mux.HandleFunc("POST /api/sources/rename", s.handleRename)
 	mux.HandleFunc("POST /api/sources/remove", s.handleRemove)
@@ -106,6 +112,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/pods/delete", s.handleDeletePod)
 	mux.HandleFunc("POST /api/deployments/restart", s.handleRestartDeployment)
 	mux.HandleFunc("POST /api/deployments/scale", s.handleScaleDeployment)
+
+	mux.HandleFunc("GET /api/forwards", s.handleListForwards)
+	mux.HandleFunc("POST /api/forwards/start", s.handleStartForward)
+	mux.HandleFunc("POST /api/forwards/stop", s.handleStopForward)
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, apiError{Error: "not found"})
@@ -200,6 +210,10 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.armed.Store(req.Armed)
+	if !req.Armed && s.Kube != nil {
+		// Port-forwards are an Ops Mode feature; returning to Night Watch closes them.
+		s.Kube.Forwards.StopAll()
+	}
 	s.Hub.Publish(events.Event{Type: "mode", State: strconv.FormatBool(req.Armed)})
 	writeJSON(w, http.StatusOK, map[string]bool{"armed": req.Armed})
 }
@@ -301,6 +315,47 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, src)
+}
+
+// handlePreview lists the clusters in a kubeconfig (by path or pasted content) without saving it.
+func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if !decode(w, r, maxImportBody, &req) {
+		return
+	}
+	var data []byte
+	switch {
+	case req.Content != "":
+		data = []byte(req.Content)
+		if len(data) > store.MaxKubeconfigBytes {
+			badRequest(w, "kubeconfig is larger than 1 MiB")
+			return
+		}
+	case req.Path != "":
+		path := filepath.Clean(strings.Trim(strings.TrimSpace(req.Path), `"`))
+		if !filepath.IsAbs(path) {
+			badRequest(w, "path must be absolute")
+			return
+		}
+		b, err := store.ReadKubeconfigFile(path)
+		if err != nil {
+			badRequest(w, "cannot read file: "+err.Error())
+			return
+		}
+		data = b
+	default:
+		badRequest(w, "path or content is required")
+		return
+	}
+	ctxs, err := kube.PreviewKubeconfig(data)
+	if err != nil {
+		badRequest(w, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"contexts": ctxs})
 }
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
@@ -513,14 +568,27 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "invalid container name")
 		return
 	}
+	var since *time.Time
+	if v := q.Get("since"); v != "" {
+		ts, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			badRequest(w, "since must be an RFC 3339 timestamp")
+			return
+		}
+		since = &ts
+	}
 	tail, err := strconv.ParseInt(q.Get("tail"), 10, 64)
-	if err != nil || tail <= 0 || tail > maxTailLines {
+	switch {
+	case since != nil && err == nil && tail == 0:
+		// A bounded time range may ask for every line in the window.
+	case err != nil || tail <= 0 || tail > maxTailLines:
 		tail = maxTailLines
 	}
 	st := newStream(w, r)
 	defer st.close()
 	_ = t.cl.StreamLogs(r.Context(), kube.LogOptions{
 		Namespace: t.ns, Pod: t.name, Container: container, TailLines: tail, Previous: q.Get("previous") == "true",
+		SinceTime: since, NoFollow: q.Get("follow") == "false",
 	}, func(e kube.LogEvent) error { return st.send(e) })
 }
 
@@ -565,7 +633,7 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request, fn func(ctx cont
 		return
 	}
 	if !s.armed.Load() {
-		writeJSON(w, http.StatusForbidden, apiError{Error: "Night Watch is on (read-only). Disable it to use the Utility Belt.", Code: "read-only"})
+		writeJSON(w, http.StatusForbidden, apiError{Error: "Night Watch is on (read-only). Switch to Ops Mode to make changes.", Code: "read-only"})
 		return
 	}
 	if req.Confirm != req.Name {
@@ -604,6 +672,63 @@ func (s *Server) handleScaleDeployment(w http.ResponseWriter, r *http.Request) {
 		}
 		return t.cl.ScaleDeployment(ctx, t.ns, t.name, *req.Replicas)
 	})
+}
+
+func (s *Server) handleListForwards(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.Kube.Forwards.List()})
+}
+
+// handleStartForward is an Ops Mode action (enforced here, not just in the UI).
+func (s *Server) handleStartForward(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ctx       string `json:"ctx"`
+		NS        string `json:"ns"`
+		Pod       string `json:"pod"`
+		PodPort   int    `json:"podPort"`
+		LocalPort int    `json:"localPort"`
+	}
+	if !decode(w, r, maxBody, &req) {
+		return
+	}
+	if !s.armed.Load() {
+		writeJSON(w, http.StatusForbidden, apiError{Error: "Port-forward is an Ops Mode action. Switch from Night Watch to Ops Mode first.", Code: "read-only"})
+		return
+	}
+	if err := kube.ValidatePorts(req.PodPort, req.LocalPort); err != nil {
+		badRequest(w, err.Error())
+		return
+	}
+	if req.LocalPort == s.Port() {
+		badRequest(w, "that local port is used by Pod Cave itself")
+		return
+	}
+	t, ok := s.resolveValues(w, req.Ctx, req.NS, req.Pod, true)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	info, err := s.Kube.Forwards.Start(ctx, t.cl, t.ns, t.name, req.PodPort, req.LocalPort)
+	if err != nil {
+		clusterError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// Stopping is always allowed, including in Night Watch.
+func (s *Server) handleStopForward(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if !decode(w, r, maxBody, &req) {
+		return
+	}
+	if err := s.Kube.Forwards.Stop(req.ID); err != nil {
+		writeJSON(w, http.StatusNotFound, apiError{Error: err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // stream writes NDJSON with periodic pings so dead connections are detected.
