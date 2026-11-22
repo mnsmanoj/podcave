@@ -80,6 +80,13 @@ settings and drawer width in `%APPDATA%\PodCave\config.json`.
     Without a To time the view keeps following new lines.
   - Timestamps, pause, download (only the matching lines while filtering). Error and warning
     lines are marked in the gutter. **Focus** (button or `F`) fills the window; `Esc` returns.
+- **Merged logs from several pods**: tick up to 10 pods, from any namespace or cluster, and
+  click **View logs** in the selection bar. Lines from all pods are merged in time order and
+  tagged with a short pod name (hover for cluster / namespace / pod). Click a pod chip to hide or
+  show its lines. The filter, time range, wrap and download work across the whole selection.
+  On a deployment, **Logs** follows every pod of that deployment and adds new pods as they
+  replace old ones (for example during a rollout). If one cluster needs a new sign-in, only
+  its pods pause.
 - **Describe** (real `kubectl describe` output including events) and **YAML** with find and copy.
 - **Port-forward** (Ops Mode): **Forward** on a pod is `kubectl -n <ns> port-forward
   pod/<pod> <local>:<pod port>`. Pick the pod port (declared container ports are listed),

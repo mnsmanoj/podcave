@@ -7,12 +7,13 @@ import { Drawer } from './components/Drawer';
 import { Icon } from './components/Icons';
 import { NamespaceList } from './components/NamespaceList';
 import { ForwardDialog, ForwardsTray } from './components/PortForward';
+import { MAX_SELECTED, selKey, SelectionBar } from './components/Selection';
 import { DeploymentsTable, PodsTable, StatusChips, StreamChip } from './components/Tables';
 import { TopBar } from './components/TopBar';
 import { Vault } from './components/Vault';
 import { useWatch } from './hooks';
 import { applyTheme, storedTheme, watchSystemTheme } from './theme';
-import type { AuthEvent, ContextInfo, Deployment, DrawerTarget, ForwardInfo, Pod, Prefs, SourceStatus, StreamStatus, ThemePref } from './types';
+import type { AuthEvent, ContextInfo, Deployment, DrawerTarget, ForwardInfo, Pod, Prefs, SelPod, SourceStatus, StreamStatus, ThemePref } from './types';
 import { cx, displayName, errMsg, type Tone } from './util';
 
 export default function App() {
@@ -92,6 +93,7 @@ function Cave() {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [forwardPod, setForwardPod] = useState<Pod | null>(null);
   const [forwards, setForwards] = useState<ForwardInfo[]>([]);
+  const [selection, setSelection] = useState<SelPod[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [epoch, setEpoch] = useState(0);
   const filterRef = useRef<HTMLInputElement>(null);
@@ -229,10 +231,42 @@ function Cave() {
   const deps = useWatch<Deployment>(depsPath);
 
   useEffect(() => {
-    setDrawer(null);
+    // A merged log view spans namespaces and clusters, so it stays open while browsing.
+    setDrawer((d) => (d?.kind === 'logs' ? d : null));
     setFilter('');
     setTone(null);
   }, [ctxId, ns]);
+
+  const pickedKeys = useMemo(() => new Set(selection.map((p) => selKey(p.ctxId, p.ns, p.pod))), [selection]);
+  const isPicked = useCallback((p: Pod) => pickedKeys.has(selKey(ctxId, ns, p.name)), [pickedKeys, ctxId, ns]);
+  const pick = (list: Pod[], on: boolean) => {
+    setSelection((sel) => {
+      if (!on) {
+        const drop = new Set(list.map((p) => selKey(ctxId, ns, p.name)));
+        return sel.filter((p) => !drop.has(selKey(p.ctxId, p.ns, p.pod)));
+      }
+      const next = [...sel];
+      const have = new Set(sel.map((p) => selKey(p.ctxId, p.ns, p.pod)));
+      for (const p of list) {
+        if (have.has(selKey(ctxId, ns, p.name))) continue;
+        if (next.length >= MAX_SELECTED) {
+          toast(`Up to ${MAX_SELECTED} pods can be viewed together.`, 'bad');
+          break;
+        }
+        next.push({ ctxId, ns, pod: p.name, containers: p.containers });
+      }
+      return next;
+    });
+  };
+  const viewSelection = () => {
+    const containers = [...new Set(selection.flatMap((p) => p.containers))].sort();
+    setDrawer({ kind: 'logs', pods: selection, containers });
+  };
+  const deploymentLogs = (d: Deployment) => {
+    const mine = pods.items.filter((p) => p.owner?.kind === 'ReplicaSet' && p.owner.name.startsWith(d.name + '-'));
+    const containers = [...new Set(mine.flatMap((p) => p.containers))].sort();
+    setDrawer({ kind: 'logs', pods: [], deployment: { ctxId, ns, name: d.name }, containers });
+  };
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -445,6 +479,9 @@ function Cave() {
                     tone={tone}
                     armed={armed}
                     selected={drawer?.kind === 'pod' ? drawer.name : undefined}
+                    picked={isPicked}
+                    pickFull={selection.length >= MAX_SELECTED}
+                    onPick={pick}
                     onOpen={(p, t) => setDrawer({ kind: 'pod', name: p.name, tab: t, snapshot: p })}
                     onDelete={deletePod}
                     onForward={setForwardPod}
@@ -456,6 +493,7 @@ function Cave() {
                     armed={armed}
                     selected={drawer?.kind === 'deployment' ? drawer.name : undefined}
                     onOpen={(d, t) => setDrawer({ kind: 'deployment', name: d.name, tab: t })}
+                    onLogs={deploymentLogs}
                     onRestart={restart}
                     onScale={scale}
                   />
@@ -474,6 +512,13 @@ function Cave() {
                   </div>
                 )}
               </div>
+              <SelectionBar
+                selection={selection}
+                nameOf={nameOf}
+                onRemove={(p) => setSelection((s) => s.filter((x) => selKey(x.ctxId, x.ns, x.pod) !== selKey(p.ctxId, p.ns, p.pod)))}
+                onClear={() => setSelection([])}
+                onView={viewSelection}
+              />
             </main>
             {drawer && (
               <Drawer
@@ -486,11 +531,13 @@ function Cave() {
                 width={prefs.drawerWidth ?? 0}
                 logPrefs={prefs.log ?? {}}
                 epoch={epoch}
+                nameOf={nameOf}
                 onLogPrefs={(l) => update((p) => ({ ...p, log: l }))}
                 onWidth={(w) => update((p) => ({ ...p, drawerWidth: w }))}
                 onTarget={setDrawer}
                 onDeletePod={deletePod}
                 onForward={setForwardPod}
+                onDeploymentLogs={deploymentLogs}
                 onRestart={restart}
                 onScale={scale}
               />

@@ -18,11 +18,13 @@ interface Props {
   width: number;
   logPrefs: LogPrefs;
   epoch: number;
+  nameOf: (ctxId: string) => string;
   onLogPrefs: (p: LogPrefs) => void;
   onWidth: (w: number) => void;
   onTarget: (t: DrawerTarget | null) => void;
   onDeletePod: (p: Pod) => void;
   onForward: (p: Pod) => void;
+  onDeploymentLogs: (d: Deployment) => void;
   onRestart: (d: Deployment) => void;
   onScale: (d: Deployment) => void;
 }
@@ -81,8 +83,53 @@ export function Drawer(props: Props) {
   return (
     <aside className={cx('drawer', focus && 'focus')}>
       {!focus && <div className="drawer-resize" onMouseDown={startDrag} title="Drag to resize" />}
-      {target.kind === 'pod' ? <PodPanel {...props} target={target} chrome={chrome} /> : <DeploymentPanel {...props} target={target} chrome={chrome} />}
+      {target.kind === 'pod' ? (
+        <PodPanel {...props} target={target} chrome={chrome} />
+      ) : target.kind === 'deployment' ? (
+        <DeploymentPanel {...props} target={target} chrome={chrome} />
+      ) : (
+        <MultiLogsPanel {...props} target={target} chrome={chrome} />
+      )}
     </aside>
+  );
+}
+
+function MultiLogsPanel(props: Props & { target: Extract<DrawerTarget, { kind: 'logs' }>; chrome: ReactNode }) {
+  const { target, nameOf, chrome } = props;
+  const dep = target.deployment;
+  const places = [...new Set(target.pods.map((p) => `${nameOf(p.ctxId)} / ${p.ns}`))];
+  return (
+    <>
+      <header className="drawer-head">
+        <div className="drawer-title">
+          <div className="drawer-title-text">
+            <span className="drawer-kind">{dep ? 'Following deployment' : 'Merged logs'}</span>
+            <h2>{dep ? dep.name : `${target.pods.length} ${target.pods.length === 1 ? 'pod' : 'pods'}`}</h2>
+          </div>
+          <div className="drawer-head-actions">{chrome}</div>
+        </div>
+        <div className="meta">
+          {dep ? (
+            <span>
+              {nameOf(dep.ctxId)} / {dep.ns}. New pods join automatically.
+            </span>
+          ) : (
+            <span className="ellipsis">{places.length > 2 ? `${places.length} namespaces` : places.join(', ')}</span>
+          )}
+        </div>
+        <div className="drawer-tabs-spacer" />
+      </header>
+      <div className="drawer-body">
+        <LogViewer
+          key={JSON.stringify([dep, target.pods.map((p) => [p.ctxId, p.ns, p.pod])])}
+          multi={target}
+          prefs={props.logPrefs}
+          onPrefs={props.onLogPrefs}
+          epoch={props.epoch}
+          nameOf={nameOf}
+        />
+      </div>
+    </>
   );
 }
 
@@ -180,7 +227,16 @@ function PodPanel(props: Props & { target: Extract<DrawerTarget, { kind: 'pod' }
       <div className="drawer-body">
         {target.tab === 'logs' &&
           (pod ? (
-            <LogViewer key={`${ctxId}|${ns}|${pod.name}`} ctxId={ctxId} ns={ns} pod={pod} prefs={props.logPrefs} onPrefs={props.onLogPrefs} epoch={props.epoch} />
+            <LogViewer
+              key={`${ctxId}|${ns}|${pod.name}`}
+              ctxId={ctxId}
+              ns={ns}
+              pod={pod}
+              prefs={props.logPrefs}
+              onPrefs={props.onLogPrefs}
+              epoch={props.epoch}
+              nameOf={props.nameOf}
+            />
           ) : (
             <div className="panel-error">Pod not found.</div>
           ))}
@@ -191,7 +247,7 @@ function PodPanel(props: Props & { target: Extract<DrawerTarget, { kind: 'pod' }
 }
 
 function DeploymentPanel(props: Props & { target: Extract<DrawerTarget, { kind: 'deployment' }>; chrome: ReactNode }) {
-  const { target, deployments, ctxId, ns, armed, onTarget, onRestart, onScale, onDeletePod, onForward, chrome } = props;
+  const { target, deployments, ctxId, ns, armed, onTarget, onRestart, onScale, onDeletePod, onForward, onDeploymentLogs, chrome } = props;
   const dep = deployments.find((d) => d.name === target.name);
   const selPath = dep?.selector && target.tab === 'pods' ? '/api/pods/watch?' + qs({ ctx: ctxId, ns, selector: dep.selector, e: props.epoch }) : null;
   const { items: depPods, status } = useWatch<Pod>(selPath);
@@ -207,6 +263,10 @@ function DeploymentPanel(props: Props & { target: Extract<DrawerTarget, { kind: 
             </span>
           )}
           <div className="drawer-head-actions">
+            <button className="btn btn-sm" disabled={!dep} onClick={() => dep && onDeploymentLogs(dep)} title="Logs of all pods, following new ones">
+              <Icon name="terminal" size={14} />
+              Logs
+            </button>
             <button className="btn btn-sm" disabled={!armed || !dep} onClick={() => dep && onRestart(dep)} title={opsTitle(armed, 'Rollout restart')}>
               <Icon name="restart" size={14} />
               Restart

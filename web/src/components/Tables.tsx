@@ -57,6 +57,10 @@ interface PodsProps {
   armed: boolean;
   selected?: string;
   compact?: boolean;
+  /** Multi-pod log selection; omit to hide the checkboxes. */
+  picked?: (pod: Pod) => boolean;
+  pickFull?: boolean;
+  onPick?: (pods: Pod[], on: boolean) => void;
   onOpen: (pod: Pod, tab: 'logs' | 'describe' | 'yaml') => void;
   onDelete: (pod: Pod) => void;
   onForward: (pod: Pod) => void;
@@ -64,7 +68,7 @@ interface PodsProps {
 
 const opsTitle = (armed: boolean, action: string) => (armed ? action : `${action} (switch to Ops Mode first)`);
 
-export function PodsTable({ pods, filter, tone, armed, selected, compact, onOpen, onDelete, onForward }: PodsProps) {
+export function PodsTable({ pods, filter, tone, armed, selected, compact, picked, pickFull, onPick, onOpen, onDelete, onForward }: PodsProps) {
   useTick(5000);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
 
@@ -92,11 +96,28 @@ export function PodsTable({ pods, filter, tone, armed, selected, compact, onOpen
   );
 
   if (pods.length === 0) return null;
+  const pickable = !!(picked && onPick);
+  const pickedCount = pickable ? rows.filter((p) => picked!(p)).length : 0;
+  const allPicked = pickable && rows.length > 0 && pickedCount === rows.length;
   return (
     <div className="table-card">
       <table className="grid">
         <thead>
           <tr>
+            {pickable && (
+              <th className="col-pick">
+                <input
+                  type="checkbox"
+                  className="check"
+                  checked={allPicked}
+                  ref={(el) => {
+                    if (el) el.indeterminate = pickedCount > 0 && !allPicked;
+                  }}
+                  onChange={() => onPick!(rows, !allPicked)}
+                  title={allPicked ? 'Unselect these pods' : 'Select these pods for a merged log view'}
+                />
+              </th>
+            )}
             {th('name', 'Name')}
             <th>Ready</th>
             {th('status', 'Status')}
@@ -109,8 +130,21 @@ export function PodsTable({ pods, filter, tone, armed, selected, compact, onOpen
         <tbody>
           {rows.map((p) => {
             const t = podTone(p.status);
+            const on = pickable && picked!(p);
             return (
-              <tr key={p.name} className={cx(selected === p.name && 'selected')} onDoubleClick={() => onOpen(p, 'logs')}>
+              <tr key={p.name} className={cx(selected === p.name && 'selected', on && 'picked')} onDoubleClick={() => onOpen(p, 'logs')}>
+                {pickable && (
+                  <td className="col-pick">
+                    <input
+                      type="checkbox"
+                      className="check"
+                      checked={on}
+                      disabled={!on && pickFull}
+                      onChange={() => onPick!([p], !on)}
+                      title={!on && pickFull ? 'Up to 10 pods can be viewed together' : 'Select for a merged log view'}
+                    />
+                  </td>
+                )}
                 <td>
                   <div className="cell-name">
                     <span className={cx('dot', `tone-${t}`)} />
@@ -169,11 +203,12 @@ interface DepProps {
   armed: boolean;
   selected?: string;
   onOpen: (d: Deployment, tab: 'pods' | 'describe' | 'yaml') => void;
+  onLogs: (d: Deployment) => void;
   onRestart: (d: Deployment) => void;
   onScale: (d: Deployment) => void;
 }
 
-export function DeploymentsTable({ deployments, filter, armed, selected, onOpen, onRestart, onScale }: DepProps) {
+export function DeploymentsTable({ deployments, filter, armed, selected, onOpen, onLogs, onRestart, onScale }: DepProps) {
   useTick(5000);
   const rows = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -242,6 +277,9 @@ export function DeploymentsTable({ deployments, filter, armed, selected, onOpen,
                     <button className="btn btn-sm" onClick={() => onOpen(d, 'pods')}>
                       <Icon name="box" size={14} />
                       Pods
+                    </button>
+                    <button className="btn btn-ghost btn-sm btn-icon" onClick={() => onLogs(d)} title="Logs of all pods, following new ones">
+                      <Icon name="terminal" size={15} />
                     </button>
                     <button className="btn btn-ghost btn-sm btn-icon" onClick={() => onOpen(d, 'describe')} title="Describe">
                       <Icon name="file" size={15} />
