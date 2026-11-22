@@ -1,4 +1,4 @@
-# Security Scan — the single definition of Pod Cave's security checks.
+# Security Scan: the single definition of Pod Cave's security checks.
 #  • Run it by hand on ANY branch: Actions → "Security Scan" → Run workflow → pick a branch.
 #  • Ship (every push/PR) and Release call this same workflow, so they never drift apart.
 name: Security Scan
@@ -54,44 +54,63 @@ jobs:
       - name: Verify package signatures / provenance from the npm registry
         run: npm audit signatures
 
-  codeql:
-    name: CodeQL (${{ matrix.language }})
+  # One plain job per language (steps shared via a YAML anchor, settings via env)
+  # instead of a matrix, so the run page shows no "Matrix" group.
+  codeql-go:
+    name: CodeQL Go
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: go
-            build-mode: manual
-          - language: javascript-typescript
-            build-mode: none
-          - language: actions
-            build-mode: none
-    steps:
+    env:
+      CODEQL_LANGUAGE: go
+      CODEQL_BUILD_MODE: manual
+    steps: &codeql-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: matrix.language == 'go'
+      - if: env.CODEQL_LANGUAGE == 'go'
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
       - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          languages: ${{ env.CODEQL_LANGUAGE }}
+          build-mode: ${{ env.CODEQL_BUILD_MODE }}
           queries: security-extended
-      - if: matrix.language == 'go'
+      - if: env.CODEQL_LANGUAGE == 'go'
         name: Build Go code for analysis
         run: |
           mkdir -p web/dist && echo placeholder > web/dist/placeholder.txt
           go build ./...
       - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
-          category: /language:${{ matrix.language }}
+          category: /language:${{ env.CODEQL_LANGUAGE }}
+
+  codeql-typescript:
+    name: CodeQL TypeScript
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    env:
+      CODEQL_LANGUAGE: javascript-typescript
+      CODEQL_BUILD_MODE: none
+    steps: *codeql-steps
+
+  codeql-workflows:
+    name: CodeQL workflows
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    env:
+      CODEQL_LANGUAGE: actions
+      CODEQL_BUILD_MODE: none
+    steps: *codeql-steps
 
   osv-scanner:
     name: OSV-Scanner (Google)

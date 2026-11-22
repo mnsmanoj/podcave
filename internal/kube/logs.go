@@ -35,6 +35,10 @@ type LogOptions struct {
 	Namespace, Pod, Container string
 	TailLines                 int64
 	Previous                  bool
+	// SinceTime limits the initial request to lines at or after this time.
+	SinceTime *time.Time
+	// NoFollow returns the matching lines once instead of streaming new ones.
+	NoFollow bool
 }
 
 // dedupe drops lines already delivered when a follow stream is resumed with
@@ -107,10 +111,15 @@ func (c *Cluster) StreamLogs(ctx context.Context, o LogOptions, emit func(LogEve
 		return err
 	}
 	for ctx.Err() == nil {
-		opts := &corev1.PodLogOptions{Container: o.Container, Follow: !o.Previous, Timestamps: true, Previous: o.Previous}
+		follow := !o.Previous && !o.NoFollow
+		opts := &corev1.PodLogOptions{Container: o.Container, Follow: follow, Timestamps: true, Previous: o.Previous}
 		if dd.last.IsZero() {
 			if o.TailLines > 0 {
 				opts.TailLines = &o.TailLines
+			}
+			if o.SinceTime != nil {
+				since := metav1.NewTime(*o.SinceTime)
+				opts.SinceTime = &since
 			}
 		} else {
 			since := metav1.NewTime(dd.last.Truncate(time.Second))
@@ -170,10 +179,13 @@ func (c *Cluster) StreamLogs(ctx context.Context, o LogOptions, emit func(LogEve
 		if o.Previous {
 			return status("ended", "End of previous container logs")
 		}
+		if !follow {
+			return status("ended", "End of the selected time range")
+		}
 		if done, msg := c.containerFinished(ctx, o); done {
 			return status("ended", msg)
 		}
-		if err := status("reconnecting", "Log stream closed; resuming…"); err != nil {
+		if err := status("reconnecting", "Log stream closed. Resuming."); err != nil {
 			return err
 		}
 		if !wait(time.Second) {
@@ -273,7 +285,7 @@ func readLine(br *bufio.Reader) (string, error) {
 		}
 	}
 	if truncated {
-		sb.WriteString(" …[line truncated by Pod Cave]")
+		sb.WriteString(" [line truncated by Pod Cave]")
 	}
 	return sb.String(), nil
 }

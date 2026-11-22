@@ -192,7 +192,7 @@ func (a *execAuth) run() (string, time.Time, error) {
 	// Only announce "waiting" if no device-code prompt is on screen; never hide the code.
 	slow := time.AfterFunc(3*time.Second, func() {
 		if !sawPrompt.Load() {
-			a.hub.PublishAuth(a.ctxID, events.AuthPending, "Waiting for "+displayCommand(a.cfg.Command)+" to provide a token…", "", "")
+			a.hub.PublishAuth(a.ctxID, events.AuthPending, "Waiting for "+displayCommand(a.cfg.Command)+" to provide a token.", "", "")
 		}
 	})
 	err := cmd.Start()

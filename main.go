@@ -28,7 +28,7 @@ const banner = `
         __        /\ /\        __
     _.-'  '-.__  /  V  \  __.-'  '-._
    /          '-\ o   o /-'          \      P O D   C A V E
-  /_    _    _   \  ^  /   _    _    _\     local Kubernetes Cave Computer
+  /_    _    _   \  ^  /   _    _    _\     local Kubernetes dashboard
     '--' '--' '--.\   /.--' '--' '--'
                   '-'
 `

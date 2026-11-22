@@ -1,4 +1,4 @@
-# Release — manual only. Actions → "Release" → Run workflow → pick the branch + enter a version.
+# Release: manual only. Actions → "Release" → Run workflow → pick the branch + enter a version.
 # Stages run one after another and each must pass:  1 Build → 2 Test → 3 Security → 4 Publish
 name: Release
 run-name: Release ${{ inputs.version }} from ${{ github.ref_name }}
@@ -82,20 +82,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  test:
-    name: 2 · Test (${{ matrix.os }})
+  # One plain job per OS (sharing steps via a YAML anchor) instead of a matrix,
+  # so the run page lists "Test on Windows" etc. rather than a "Matrix" group.
+  test-linux:
+    name: 2 · Test on Linux
     needs: build
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
     defaults:
       run:
         shell: bash
-    steps:
+    steps: &test-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -131,9 +129,31 @@ jobs:
           echo "$got"
           [ "$got" = "pod-cave ${VERSION#v}" ] || { echo "::error::unexpected version output"; exit 1; }
 
+  test-windows:
+    name: 2 · Test on Windows
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps: *test-steps
+
+  test-macos:
+    name: 2 · Test on macOS
+    needs: build
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps: *test-steps
+
   security:
     name: 3 · Security (source)
-    needs: test
+    needs: [test-linux, test-windows, test-macos]
     permissions:
       actions: read
       contents: read
@@ -142,7 +162,7 @@ jobs:
 
   security-binaries:
     name: 3 · Security (built binaries)
-    needs: test
+    needs: [test-linux, test-windows, test-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -176,6 +196,11 @@ jobs:
       id-token: write # sign the build attestation
       attestations: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/release-notes.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: binaries
@@ -197,6 +222,8 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
           TARGET_SHA: ${{ github.sha }}
         run: |
-          flags=(--target "$TARGET_SHA" --title "Pod Cave $VERSION" --generate-notes)
+          # The download guide goes first; GitHub appends the generated changelog after it.
+          sed -e "s|{{VERSION}}|${VERSION}|g" -e "s|{{REPO}}|${GH_REPO}|g" .github/release-notes.md > notes.md
+          flags=(--target "$TARGET_SHA" --title "Pod Cave $VERSION" --notes-file notes.md --generate-notes)
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
           gh release create "$VERSION" "${flags[@]}" out/*

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, ApiError, qs } from '../api';
 import { cx, errMsg } from '../util';
+import { Icon } from './Icons';
 
 interface Props {
   ctxId: string;
@@ -43,6 +44,7 @@ export function NamespaceList({ ctxId, selected, extra, epoch, onSelect, onExtra
 
   const all = useMemo(() => Array.from(new Set([...items, ...extra, selected].filter(Boolean))).sort(), [items, extra, selected]);
   const shown = all.filter((n) => n.includes(filter.trim().toLowerCase()));
+  const addValid = NS_RE.test(adding.trim().toLowerCase());
 
   const add = () => {
     const n = adding.trim().toLowerCase();
@@ -55,17 +57,40 @@ export function NamespaceList({ ctxId, selected, extra, epoch, onSelect, onExtra
   return (
     <nav className="sidebar">
       <div className="side-head">
-        <span>NAMESPACES</span>
+        <span>Namespaces</span>
         <span className="count">{all.length}</span>
-        <button className="icon" onClick={() => setReload((r) => r + 1)} title="Refresh namespaces">
-          ⟳
+        <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setReload((r) => r + 1)} title="Refresh namespaces">
+          <Icon name="refresh" size={14} />
         </button>
       </div>
-      <input className="side-filter" value={filter} placeholder="Filter namespaces" onChange={(e) => setFilter(e.target.value)} />
-      {err && <div className={cx('side-msg', err.auth ? 'bad' : 'warn')}>{err.auth ? 'Signal lost — sign in again (see banner).' : err.text}</div>}
-      {restricted && msg && <div className="side-msg info">{msg}</div>}
+      <form
+        className={cx('field-box', adding && !addValid && 'invalid')}
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+        title={adding && !addValid ? 'Lowercase letters, numbers and hyphens only' : 'Add a namespace you can access but cannot list'}
+      >
+        <Icon name="plus" size={14} />
+        <input value={adding} placeholder="Add namespace" onChange={(e) => setAdding(e.target.value)} spellCheck={false} />
+        {adding && addValid && (
+          <button type="submit" className="btn btn-ghost btn-sm">
+            Add
+          </button>
+        )}
+      </form>
+      <div className="field-box">
+        <Icon name="search" size={14} />
+        <input value={filter} placeholder="Filter" onChange={(e) => setFilter(e.target.value)} spellCheck={false} />
+      </div>
+      {err && <div className={cx('side-msg', err.auth ? 'bad' : 'warn')}>{err.auth ? 'Sign-in needed. Use the banner at the top.' : err.text}</div>}
+      {restricted && msg && <div className="side-msg">{msg}</div>}
       <ul className="ns-list">
-        {loading && items.length === 0 && <li className="muted pad">Scanning the city…</li>}
+        {loading && items.length === 0 && (
+          <li className="side-loading">
+            <span className="spinner" /> Loading
+          </li>
+        )}
         {shown.map((n) => (
           <li key={n}>
             <button className={cx('ns', n === selected && 'on')} onClick={() => onSelect(n)}>
@@ -79,23 +104,14 @@ export function NamespaceList({ ctxId, selected, extra, epoch, onSelect, onExtra
                     onExtra(extra.filter((x) => x !== n));
                   }}
                 >
-                  ✕
+                  <Icon name="x" size={12} />
                 </span>
               )}
             </button>
           </li>
         ))}
+        {!loading && shown.length === 0 && filter && <li className="side-loading">No match</li>}
       </ul>
-      <div className="ns-add">
-        <input
-          value={adding}
-          placeholder="+ add namespace"
-          onChange={(e) => setAdding(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && add()}
-          className={cx(adding && !NS_RE.test(adding.trim().toLowerCase()) && 'invalid')}
-        />
-      </div>
-      <div className="skyline" aria-hidden />
     </nav>
   );
 }

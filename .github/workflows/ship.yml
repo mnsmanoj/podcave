@@ -1,4 +1,4 @@
-# Ship — runs on every push and pull request (and weekly, to catch newly published CVEs).
+# Ship: runs on every push and pull request (and weekly, to catch newly published CVEs).
 # Build & test on Windows + Linux, then the full Security Scan.
 name: Ship
 
@@ -17,19 +17,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-test:
-    name: Build & test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  # Plain per-OS jobs sharing steps via a YAML anchor, so no "Matrix" group shows on the run page.
+  build-test-linux:
+    name: Build & test on Linux
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         shell: bash
-    steps:
+    steps: &build-test-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -52,6 +49,16 @@ jobs:
         run: go test ./internal/...
       - name: go build
         run: go build -trimpath ./...
+
+  build-test-windows:
+    name: Build & test on Windows
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps: *build-test-steps
 
   security:
     name: Security

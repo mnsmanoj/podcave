@@ -2,31 +2,40 @@ import { useState } from 'react';
 import { api } from '../api';
 import type { AuthEvent, ContextInfo } from '../types';
 import { cx, errMsg } from '../util';
-import { BatSignalArt } from './Bat';
+import { Icon } from './Icons';
 
 interface Props {
   events: AuthEvent[];
   contexts: ContextInfo[];
+  nameOf: (ctxId: string) => string;
   onDismiss: (ctx: string) => void;
 }
 
-/** Raised whenever a cluster needs the user to sign in again (the Cave Signal). */
-export function BatSignal({ events, contexts, onDismiss }: Props) {
+/** The Cave Signal: raised whenever a cluster needs you to sign in again. */
+export function BatSignal({ events, contexts, nameOf, onDismiss }: Props) {
   if (!events.length) return null;
   return (
-    <div className="batsignal-stack">
+    <div className="signals">
       {events.map((e) => (
-        <Signal key={e.ctx} ev={e} ctx={contexts.find((c) => c.id === e.ctx)} onDismiss={() => onDismiss(e.ctx)} />
+        <Signal key={e.ctx} ev={e} name={nameOf(e.ctx)} ctx={contexts.find((c) => c.id === e.ctx)} onDismiss={() => onDismiss(e.ctx)} />
       ))}
     </div>
   );
 }
 
-function Signal({ ev, ctx, onDismiss }: { ev: AuthEvent; ctx?: ContextInfo; onDismiss: () => void }) {
+const TITLES: Record<string, string> = {
+  'device-code': 'Sign in to continue',
+  pending: 'Signing in',
+  'needs-login': 'Your session expired',
+  error: 'Sign-in failed',
+};
+
+function Signal({ ev, name, ctx, onDismiss }: { ev: AuthEvent; name: string; ctx?: ContextInfo; onDismiss: () => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [copied, setCopied] = useState(false);
   const azure = ctx?.loginMode === 'azurecli';
+  const bad = ev.state === 'needs-login' || ev.state === 'error';
 
   const login = async (method: string) => {
     setBusy(true);
@@ -51,59 +60,53 @@ function Signal({ ev, ctx, onDismiss }: { ev: AuthEvent; ctx?: ContextInfo; onDi
     }
   };
 
-  const title =
-    ev.state === 'device-code'
-      ? 'THE SIGNAL IS LIT — SIGN IN'
-      : ev.state === 'pending'
-        ? 'AWAITING CLEARANCE…'
-        : ev.state === 'needs-login'
-          ? 'SIGNAL LOST — SESSION EXPIRED'
-          : 'SIGNAL LOST — AUTH FAILED';
-
   return (
-    <div className={cx('batsignal', `bs-${ev.state}`)} role="alert">
-      <BatSignalArt className="bs-art" />
-      <div className="bs-body">
-        <div className="bs-title">
-          {title}
-          <span className="bs-ctx">{ctx?.name ?? ev.ctx}</span>
-        </div>
-        {ev.message && <div className="bs-msg">{ev.message}</div>}
+    <div className={cx('signal', bad && 'bad')} role="alert">
+      <div className="signal-icon">
+        {ev.state === 'pending' ? <span className="spinner" /> : <Icon name="signal" size={18} />}
+      </div>
+      <div className="signal-body">
+        <div className="signal-label">Cave Signal, {name}</div>
+        <div className="signal-title">{TITLES[ev.state] ?? 'Sign-in needed'}</div>
+        {ev.message && <div className="signal-msg">{ev.message}</div>}
         {ev.state === 'device-code' && ev.code && (
-          <div className="bs-code">
-            <span className="code mono">{ev.code}</span>
+          <div className="signal-actions">
+            <span className="signal-code">{ev.code}</span>
             <button className="btn" onClick={copy}>
-              {copied ? 'Copied ✓' : 'Copy code'}
+              <Icon name={copied ? 'check' : 'copy'} size={14} />
+              {copied ? 'Copied' : 'Copy code'}
             </button>
             {ev.url && /^https:\/\//.test(ev.url) && (
-              <a className="btn primary" href={ev.url} target="_blank" rel="noopener noreferrer">
-                Open sign-in page ↗
+              <a className="btn btn-primary" href={ev.url} target="_blank" rel="noopener noreferrer">
+                Open sign-in page
+                <Icon name="external" size={14} />
               </a>
             )}
-            <span className="muted small">Only enter this code if you started this sign-in from Pod Cave just now.</span>
+            <span className="muted small">Only enter this code if you just started a sign-in from Pod Cave.</span>
           </div>
         )}
-        {ev.state !== 'device-code' && ev.state !== 'pending' && (
-          <div className="bs-actions">
+        {bad && (
+          <div className="signal-actions">
             {azure && (
               <>
-                <button className="btn primary" disabled={busy} onClick={() => login('az-browser')}>
-                  Re-login (browser)
+                <button className="btn btn-primary" disabled={busy} onClick={() => login('az-browser')}>
+                  Sign in with browser
                 </button>
                 <button className="btn" disabled={busy} onClick={() => login('az-devicecode')}>
-                  Re-login (device code)
+                  Use device code
                 </button>
               </>
             )}
-            <button className={cx('btn', !azure && 'primary')} disabled={busy} onClick={() => login('retry')}>
+            <button className={cx('btn', !azure && 'btn-primary')} disabled={busy} onClick={() => login('retry')}>
+              <Icon name="refresh" size={14} />
               {azure ? 'Retry' : 'Sign in again'}
             </button>
           </div>
         )}
-        {err && <div className="bs-err">{err}</div>}
+        {err && <div className="signal-err">{err}</div>}
       </div>
-      <button className="icon bs-close" onClick={onDismiss} title="Dismiss">
-        ✕
+      <button className="btn btn-ghost btn-sm btn-icon signal-close" onClick={onDismiss} title="Dismiss">
+        <Icon name="x" size={14} />
       </button>
     </div>
   );

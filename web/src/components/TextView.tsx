@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, qs } from '../api';
 import { buildMatcher, cx, errMsg } from '../util';
+import { Icon } from './Icons';
 
 interface Props {
   ctxId: string;
@@ -100,13 +101,14 @@ export function TextView({ ctxId, ns, kind, name, mode, epoch }: Props) {
 
   return (
     <div className="textview">
-      <div className="log-toolbar">
-        <div className="tb-group search">
-          <div className="searchbox">
+      <div className="lv-toolbar">
+        <div className="lv-search">
+          <div className="field-box">
+            <Icon name="search" size={14} />
             <input
               ref={search}
               value={query}
-              placeholder={`Find in ${mode === 'yaml' ? 'YAML' : 'describe'} (Ctrl+F)`}
+              placeholder={`Find in ${mode === 'yaml' ? 'YAML' : 'describe'}`}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') jump(e.shiftKey ? -1 : 1);
@@ -114,28 +116,29 @@ export function TextView({ ctxId, ns, kind, name, mode, epoch }: Props) {
               }}
             />
           </div>
-          <span className="match-count">{matcher ? `${count}` : ''}</span>
-          <button className="icon" onClick={() => jump(-1)} disabled={!count}>
-            ↑
+          <span className="lv-count">{matcher ? `${count ? cur + 1 : 0} / ${count}` : ''}</span>
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => jump(-1)} disabled={!count} title="Previous">
+            <Icon name="chevronUp" size={15} />
           </button>
-          <button className="icon" onClick={() => jump(1)} disabled={!count}>
-            ↓
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => jump(1)} disabled={!count} title="Next">
+            <Icon name="chevronDown" size={15} />
           </button>
         </div>
-        <div className="tb-group">
-          <button className="icon" onClick={copy} disabled={!text} title="Copy">
-            {copied ? '✓' : '⧉'}
+        <div className="lv-group">
+          <button className="btn btn-sm" onClick={copy} disabled={!text}>
+            <Icon name={copied ? 'check' : 'copy'} size={14} />
+            {copied ? 'Copied' : 'Copy'}
           </button>
-          <button className="icon" onClick={() => setReload((r) => r + 1)} title="Refresh">
-            ⟳
+          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setReload((r) => r + 1)} title="Refresh">
+            <Icon name="refresh" size={15} />
           </button>
         </div>
       </div>
       {err ? (
         <div className="panel-error">{err}</div>
       ) : (
-        <pre ref={box} className={cx('text-pre', loading && 'loading', mode)}>
-          {loading && !text ? 'Interrogating the cluster…' : nodes}
+        <pre ref={box} className={cx('tv-pre', loading && !text && 'loading')}>
+          {loading && !text ? 'Loading' : nodes}
         </pre>
       )}
     </div>

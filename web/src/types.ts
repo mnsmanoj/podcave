@@ -35,6 +35,7 @@ export interface Pod {
   ip?: string;
   containers: string[];
   initContainers?: string[];
+  ports?: { container: string; name?: string; port: number; protocol: string }[];
   owner?: { kind: string; name: string };
   labels?: Record<string, string>;
 }
@@ -71,6 +72,8 @@ export interface LogPrefs {
   tail?: number;
 }
 
+export type ThemePref = 'system' | 'light' | 'dark';
+
 export interface Prefs {
   lastContext?: string;
   lastNamespace?: Record<string, string>;
@@ -78,6 +81,30 @@ export interface Prefs {
   tab?: 'pods' | 'deployments';
   log?: LogPrefs;
   drawerWidth?: number;
+  theme?: ThemePref;
+  /** Optional suffix per context id, shown as "name - label". */
+  contextLabels?: Record<string, string>;
+}
+
+export interface ContextPreview {
+  name: string;
+  cluster: string;
+  server: string;
+  namespace?: string;
+}
+
+export interface ForwardInfo {
+  id: string;
+  ctx: string;
+  ctxName: string;
+  namespace: string;
+  pod: string;
+  podPort: number;
+  localPort: number;
+  address: string;
+  state: 'starting' | 'active' | 'failed';
+  message?: string;
+  started: string;
 }
 
 export interface StreamStatus {

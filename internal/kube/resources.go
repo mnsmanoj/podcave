@@ -27,6 +27,13 @@ type Owner struct {
 	Name string `json:"name"`
 }
 
+type ContainerPort struct {
+	Container string `json:"container"`
+	Name      string `json:"name,omitempty"`
+	Port      int32  `json:"port"`
+	Protocol  string `json:"protocol"`
+}
+
 type PodSummary struct {
 	Name           string            `json:"name"`
 	Namespace      string            `json:"namespace"`
@@ -39,6 +46,7 @@ type PodSummary struct {
 	IP             string            `json:"ip,omitempty"`
 	Containers     []string          `json:"containers"`
 	InitContainers []string          `json:"initContainers,omitempty"`
+	Ports          []ContainerPort   `json:"ports,omitempty"`
 	Owner          *Owner            `json:"owner,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
 }
@@ -144,6 +152,13 @@ func SummarizePod(p *corev1.Pod) PodSummary {
 	}
 	for _, c := range p.Spec.Containers {
 		s.Containers = append(s.Containers, c.Name)
+		for _, cp := range c.Ports {
+			proto := string(cp.Protocol)
+			if proto == "" {
+				proto = string(corev1.ProtocolTCP)
+			}
+			s.Ports = append(s.Ports, ContainerPort{Container: c.Name, Name: cp.Name, Port: cp.ContainerPort, Protocol: proto})
+		}
 	}
 	for _, c := range p.Spec.InitContainers {
 		s.InitContainers = append(s.InitContainers, c.Name)
