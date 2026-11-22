@@ -74,12 +74,22 @@ export interface LogPrefs {
   multiTail?: number;
 }
 
-/** A pod picked for the merged log view. */
+/** A pod picked for the merged log view or a bulk delete. */
 export interface SelPod {
   ctxId: string;
   ns: string;
   pod: string;
   containers: string[];
+  /** "ReplicaSet web-7d9" when a controller will replace the pod after a delete. */
+  owner?: string;
+}
+
+/** A deployment picked for a bulk scale. */
+export interface SelDep {
+  ctxId: string;
+  ns: string;
+  name: string;
+  replicas: number;
 }
 
 export interface MultiSpec {

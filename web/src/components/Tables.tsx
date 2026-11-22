@@ -3,6 +3,7 @@ import { useTick } from '../hooks';
 import type { Deployment, Pod, StreamStatus } from '../types';
 import { age, cx, podTone, type Tone } from '../util';
 import { Icon } from './Icons';
+import { MAX_SELECTED, MAX_SELECTED_DEPLOYMENTS } from './Selection';
 
 type SortKey = 'name' | 'status' | 'restarts' | 'age';
 
@@ -68,6 +69,42 @@ interface PodsProps {
 
 const opsTitle = (armed: boolean, action: string) => (armed ? action : `${action} (switch to Ops Mode first)`);
 
+function PickHeader<T>({ rows, picked, onPick, noun }: { rows: T[]; picked: (x: T) => boolean; onPick: (xs: T[], on: boolean) => void; noun: string }) {
+  const count = rows.filter(picked).length;
+  const all = rows.length > 0 && count === rows.length;
+  return (
+    <th className="col-pick">
+      <input
+        type="checkbox"
+        className="check"
+        checked={all}
+        ref={(el) => {
+          if (el) el.indeterminate = count > 0 && !all;
+        }}
+        onChange={() => onPick(rows, !all)}
+        title={all ? `Unselect these ${noun}` : `Select all ${noun} shown`}
+      />
+    </th>
+  );
+}
+
+function PickCell({ on, full, onToggle, what }: { on: boolean; full: boolean; onToggle: () => void; what: 'pods' | 'deployments' }) {
+  const limit = what === 'pods' ? MAX_SELECTED : MAX_SELECTED_DEPLOYMENTS;
+  return (
+    <td className="col-pick">
+      <input
+        type="checkbox"
+        className="check"
+        checked={on}
+        disabled={!on && full}
+        onChange={onToggle}
+        onDoubleClick={(e) => e.stopPropagation()}
+        title={!on && full ? `Up to ${limit} ${what} can be selected` : 'Select'}
+      />
+    </td>
+  );
+}
+
 export function PodsTable({ pods, filter, tone, armed, selected, compact, picked, pickFull, onPick, onOpen, onDelete, onForward }: PodsProps) {
   useTick(5000);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
@@ -97,27 +134,12 @@ export function PodsTable({ pods, filter, tone, armed, selected, compact, picked
 
   if (pods.length === 0) return null;
   const pickable = !!(picked && onPick);
-  const pickedCount = pickable ? rows.filter((p) => picked!(p)).length : 0;
-  const allPicked = pickable && rows.length > 0 && pickedCount === rows.length;
   return (
     <div className="table-card">
       <table className="grid">
         <thead>
           <tr>
-            {pickable && (
-              <th className="col-pick">
-                <input
-                  type="checkbox"
-                  className="check"
-                  checked={allPicked}
-                  ref={(el) => {
-                    if (el) el.indeterminate = pickedCount > 0 && !allPicked;
-                  }}
-                  onChange={() => onPick!(rows, !allPicked)}
-                  title={allPicked ? 'Unselect these pods' : 'Select these pods for a merged log view'}
-                />
-              </th>
-            )}
+            {pickable && <PickHeader rows={rows} picked={picked!} onPick={onPick!} noun="pods" />}
             {th('name', 'Name')}
             <th>Ready</th>
             {th('status', 'Status')}
@@ -133,18 +155,7 @@ export function PodsTable({ pods, filter, tone, armed, selected, compact, picked
             const on = pickable && picked!(p);
             return (
               <tr key={p.name} className={cx(selected === p.name && 'selected', on && 'picked')} onDoubleClick={() => onOpen(p, 'logs')}>
-                {pickable && (
-                  <td className="col-pick">
-                    <input
-                      type="checkbox"
-                      className="check"
-                      checked={on}
-                      disabled={!on && pickFull}
-                      onChange={() => onPick!([p], !on)}
-                      title={!on && pickFull ? 'Up to 10 pods can be viewed together' : 'Select for a merged log view'}
-                    />
-                  </td>
-                )}
+                {pickable && <PickCell on={on} full={!!pickFull} onToggle={() => onPick!([p], !on)} what="pods" />}
                 <td>
                   <div className="cell-name">
                     <span className={cx('dot', `tone-${t}`)} />
@@ -206,9 +217,12 @@ interface DepProps {
   onLogs: (d: Deployment) => void;
   onRestart: (d: Deployment) => void;
   onScale: (d: Deployment) => void;
+  picked?: (d: Deployment) => boolean;
+  pickFull?: boolean;
+  onPick?: (deps: Deployment[], on: boolean) => void;
 }
 
-export function DeploymentsTable({ deployments, filter, armed, selected, onOpen, onLogs, onRestart, onScale }: DepProps) {
+export function DeploymentsTable({ deployments, filter, armed, selected, onOpen, onLogs, onRestart, onScale, picked, pickFull, onPick }: DepProps) {
   useTick(5000);
   const rows = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -218,11 +232,13 @@ export function DeploymentsTable({ deployments, filter, armed, selected, onOpen,
   }, [deployments, filter]);
 
   if (deployments.length === 0) return null;
+  const pickable = !!(picked && onPick);
   return (
     <div className="table-card">
       <table className="grid">
         <thead>
           <tr>
+            {pickable && <PickHeader rows={rows} picked={picked!} onPick={onPick!} noun="deployments" />}
             <th>Name</th>
             <th>Ready</th>
             <th className="num">Up-to-date</th>
@@ -237,8 +253,10 @@ export function DeploymentsTable({ deployments, filter, armed, selected, onOpen,
             const healthy = d.ready === d.replicas && d.available === d.replicas;
             const t: Tone = d.replicas === 0 ? 'muted' : healthy ? 'ok' : d.ready === 0 ? 'bad' : 'warn';
             const pct = d.replicas ? Math.round((d.ready / d.replicas) * 100) : 0;
+            const on = pickable && picked!(d);
             return (
-              <tr key={d.name} className={cx(selected === d.name && 'selected')} onDoubleClick={() => onOpen(d, 'pods')}>
+              <tr key={d.name} className={cx(selected === d.name && 'selected', on && 'picked')} onDoubleClick={() => onOpen(d, 'pods')}>
+                {pickable && <PickCell on={on} full={!!pickFull} onToggle={() => onPick!([d], !on)} what="deployments" />}
                 <td>
                   <div className="cell-name">
                     <span className={cx('dot', `tone-${t}`)} />

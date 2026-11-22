@@ -94,6 +94,19 @@ settings and drawer width in `%APPDATA%\PodCave\config.json`.
   **Forwards** tray (open in browser, copy address, stop). Forwards listen on `127.0.0.1`
   only, reuse your kubelogin sign-in, and close when you return to Night Watch or quit.
 - **Ops Mode** (write actions): delete pod, rollout-restart and scale deployments, port-forward.
+  Each write asks you to type `yes` to confirm. Scaling a deployment above 5 replicas shows a
+  reminder to check that the cluster has room for the extra pods. Switching to Ops Mode sends a
+  quick burst of bats flying out from where you clicked (skipped if Windows has animations turned
+  off).
+- **Bulk actions** (Ops Mode): tick pods or deployments from any namespace or cluster and use the
+  selection bar at the bottom.
+  - **Pods**: **Delete** removes all selected pods at once, for example to restart them; their
+    deployments create replacements. Pods without a controller are flagged before you confirm.
+  - **Deployments**: **Scale** sets every selected deployment to the same replica count at once.
+    Each deployment in the dialog also has its own box; a number typed there overrides the
+    overall count for just that one.
+  - If some items fail (for example because of RBAC), the dialog lists them and confirming again
+    retries only the failed ones.
 - Monochrome dark and light themes (follows Windows by default; toggle in the header).
 
 ## Safety model
@@ -104,7 +117,7 @@ settings and drawer width in `%APPDATA%\PodCave\config.json`.
 | Other websites / tabs | Requests need a bearer session token held only in that tab (no cookies), Host header must be `127.0.0.1`/`localhost` (blocks DNS rebinding), cross-site and foreign-origin requests are rejected, strict CSP, no framing. |
 | Sign-in link | Single-use, expires in 10 minutes, carried in the URL `#fragment` (never sent over HTTP) and removed from the address bar immediately. |
 | Credentials | Kubeconfig contents and tokens stay in the backend; never sent to the browser or logged. Imported kubeconfigs are encrypted with DPAPI (your Windows user only). |
-| Accidental changes | Always starts in read-only **Night Watch**. Switching to **Ops Mode** is per session and enforced server-side; destructive actions require typing the resource name. You can never do more than your own Kubernetes RBAC allows. |
+| Accidental changes | Always starts in read-only **Night Watch**. Switching to **Ops Mode** is per session and enforced server-side; every write action requires typing `yes`, which the server checks too. Bulk actions list every affected pod or deployment before you confirm. You can never do more than your own Kubernetes RBAC allows. |
 | Port-forwards | Ops Mode only (enforced server-side), bound to `127.0.0.1`, max 20, all closed when leaving Ops Mode or quitting. |
 | Outbound traffic | Only to the API servers in your kubeconfigs. No telemetry, no CDN; all UI assets are embedded in the exe. TLS verification follows your kubeconfig (the cluster picker warns about `insecure-skip-tls-verify`). |
 | Admin rights | None needed. No installer, service, or registry changes. |
