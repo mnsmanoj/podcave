@@ -626,7 +626,7 @@ type actionReq struct {
 	Replicas *int32 `json:"replicas,omitempty"`
 }
 
-// action enforces Night Watch (read-only) and typed-name confirmation
+// action enforces Night Watch (read-only) and a typed "yes" confirmation
 // server-side, so a UI bug can never trigger a write by accident.
 func (s *Server) action(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context, t *target, req actionReq) error) {
 	var req actionReq
@@ -637,8 +637,8 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request, fn func(ctx cont
 		writeJSON(w, http.StatusForbidden, apiError{Error: "Night Watch is on (read-only). Switch to Ops Mode to make changes.", Code: "read-only"})
 		return
 	}
-	if req.Confirm != req.Name {
-		badRequest(w, "confirmation does not match the resource name")
+	if !strings.EqualFold(strings.TrimSpace(req.Confirm), "yes") {
+		badRequest(w, `type "yes" to confirm`)
 		return
 	}
 	t, ok := s.resolveValues(w, req.Ctx, req.NS, req.Name, true)
